@@ -56,7 +56,7 @@ public class TunnelTcpConnection {
 		manager.add(this);
 		
 		/**
-		 * Was newTcpSocketResponse(socketId, true) sent?
+		 * Was newTcpSocketResponse(portId, true) sent?
 		 */
 		AtomicBoolean newTcpSocketMessageSent = new AtomicBoolean(false);
 		

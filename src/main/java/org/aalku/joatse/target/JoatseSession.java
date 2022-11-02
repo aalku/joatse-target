@@ -5,15 +5,20 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.locks.ReentrantLock;
 
+import org.aalku.joatse.target.JoatseClient.TunnelRequestItem;
 import org.aalku.joatse.target.tools.io.WebSocketSendWorker;
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.socket.BinaryMessage;
+import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketMessage;
 import org.springframework.web.socket.WebSocketSession;
 
@@ -28,17 +33,21 @@ public class JoatseSession {
 	ReentrantLock lock = new ReentrantLock();
 	
 	/**
+	 * Requested connections
+	 */
+	private Map<Long, TunnelRequestItem> tcpConnectionTargets = new LinkedHashMap<>();
+
+	/**
 	 * Stablished TCP tunnel connections
 	 */
 	private Map<Long, TunnelTcpConnection> tcpConnectionMap = new LinkedHashMap<>();
+	
 	private WebSocketSendWorker wsSendWorker;
 
 	private WebSocketSession session;
-	private InetAddress targetInetAddress;
 	
-	public JoatseSession(WebSocketSession session, InetAddress targetInetAddress) {
+	public JoatseSession(WebSocketSession session) {
 		this.session = session;
-		this.targetInetAddress = targetInetAddress;
 		this.wsSendWorker = new WebSocketSendWorker(this.session);
 	}
 	
@@ -60,8 +69,9 @@ public class JoatseSession {
 		byte type = buffer.get();
 		if (type == TunnelTcpConnection.MESSAGE_TYPE_NEW_TCP_SOCKET) {
 			long socketId = buffer.getLong();
-			int targetPort = buffer.getShort() & 0xFFFF;
-			InetSocketAddress targetAddress = new InetSocketAddress(targetInetAddress, targetPort);
+			long targetId = buffer.getLong();
+			TunnelRequestItem target = tcpConnectionTargets.get(targetId);
+			InetSocketAddress targetAddress = new InetSocketAddress(InetAddress.getByName(target.targetHostname), target.targetPort);
 			TunnelTcpConnection c = new TunnelTcpConnection(this, targetAddress, socketId, (e)->this.close(e));
 			c.getCloseStatus().thenAccept(remote->{
 				// Connection closed ok
@@ -84,7 +94,8 @@ public class JoatseSession {
 			try {
 				c = tcpConnectionMap.get(socketId);
 				if (c == null) {
-					throw new IOException("TunnelTcpConnection is not open: " + socketId);
+					log.warn("TunnelTcpConnection is not open: " + socketId);
+					return; // Abort withouut closing the session
 				}
 				runWithoutLock = c.receivedMessage(buffer, type); // blocking with lock is ok
 			} catch (Exception e) {
@@ -142,4 +153,25 @@ public class JoatseSession {
 	public CompletableFuture<Void> sendMessage(WebSocketMessage<?> message) {
 		return wsSendWorker.sendMessage(message);
 	}
+
+	public void createTunnel(Collection<TunnelRequestItem> tcpTunnels) {
+		// TODO udp ports
+		JSONObject js = new JSONObject();
+		js.put("request", "CONNECTION");
+		JSONArray tcpJs = new JSONArray();
+		for (TunnelRequestItem i: tcpTunnels) {
+			tcpConnectionTargets.put(i.targetId, i);
+			JSONObject o = new JSONObject();
+			o.put("targetId", i.targetId);
+			o.put("targetDescription", i.targetDescription);
+			o.put("targetHostName", i.targetHostname);
+			o.put("targetPort", i.targetPort);
+			tcpJs.put(o);
+		}
+		js.put("tcpTunnels", tcpJs);
+		TextMessage message = new TextMessage(js.toString());
+		log.info("sending request: {}", message.getPayload());
+		sendMessage(message);
+	}
+	
 }

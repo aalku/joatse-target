@@ -2,10 +2,11 @@ package org.aalku.joatse.target;
 
 import java.io.Console;
 import java.io.IOException;
-import java.net.InetAddress;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.Collection;
 import java.util.Optional;
+import java.util.Random;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
@@ -14,6 +15,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import org.aalku.joatse.target.tools.QrGenerator;
 import org.aalku.joatse.target.tools.QrGenerator.QrMode;
 import org.aalku.joatse.target.tools.io.IOTools;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,14 +32,11 @@ public class JoatseClient implements WebSocketHandler {
 
 	private static final int MESSAGE_SIZE_LIMIT = 1024*64;
 
-	private enum ClientState { BOOT, CONNECTED, FINISHED };
+	private enum ClientState { BOOT, WS_CONNECTED, WAITING_RESPONSE, WAITING_CONFIRM, TUNNEL_CONNECTED, FINISHED };
 
 	private Logger log = LoggerFactory.getLogger(JoatseClient.class);
 	private String cloudUrl;
 	private QrMode qrMode;
-	private String targetHostId;
-	private String targetHostname;
-	private InetAddress targetInetAddress;
 	
 	private Lock lock = new ReentrantLock();
 	/** app state change condition. Use with lock */
@@ -46,12 +45,8 @@ public class JoatseClient implements WebSocketHandler {
 	private AtomicReference<ClientState> state = new AtomicReference<>(ClientState.BOOT);
 	
     private JoatseSession jSession = null;
-	
-	public JoatseClient(String targetHostId, String targetHostname, InetAddress targetInetAddress, String cloudUrl,
-			QrMode qrMode) {
-		this.targetHostId = targetHostId;
-		this.targetHostname = targetHostname;
-		this.targetInetAddress = targetInetAddress;
+    
+	public JoatseClient(String cloudUrl, QrMode qrMode) {
 		this.cloudUrl = cloudUrl;
 		this.qrMode = qrMode;
 	}
@@ -62,7 +57,7 @@ public class JoatseClient implements WebSocketHandler {
 		client.doHandshake(this, headers, new URI(cloudUrl)).addCallback(new ListenableFutureCallback<WebSocketSession>() {
 			@Override
 			public void onSuccess(WebSocketSession session) {
-				setState(ClientState.CONNECTED);
+				// We will use the other handler
 			}
 			@Override
 			public void onFailure(Throwable ex) {
@@ -76,8 +71,12 @@ public class JoatseClient implements WebSocketHandler {
 	JoatseClient waitUntilConnected() {
 		lock.lock();
 		try {
-			while (state.get() != ClientState.CONNECTED && state.get() != ClientState.FINISHED) {
-				log.info("waiting for ClientState {} or {}; it is {}", ClientState.CONNECTED, ClientState.FINISHED, state.get());
+			ClientState aux;
+			while ((aux = state.get()) != ClientState.WS_CONNECTED && aux != ClientState.FINISHED) {
+				if (aux != ClientState.BOOT) {
+					throw new IllegalStateException("Invalid state " + state.get() + " when waiting for " + ClientState.WS_CONNECTED);
+				}
+				log.info("waiting for ClientState {} or {}; it is {}", ClientState.WS_CONNECTED, ClientState.FINISHED, state.get());
 				stateChange.await();
 			}
 		} catch (InterruptedException e1) {
@@ -117,7 +116,8 @@ public class JoatseClient implements WebSocketHandler {
 	public void afterConnectionEstablished(WebSocketSession session) throws Exception {
 		session.setBinaryMessageSizeLimit(MESSAGE_SIZE_LIMIT);
 		log.info("connected: {}", session.getId());
-		jSession = new JoatseSession(session, targetInetAddress);
+		jSession = new JoatseSession(session);
+		setState(ClientState.WS_CONNECTED);
 	}
 
 	@Override
@@ -136,13 +136,26 @@ public class JoatseClient implements WebSocketHandler {
 			if ("CONNECTION".equals(js.optString("request")) && js.has("response")) {
 				String response = js.getString("response");
 				if (response.equals("RUNNING")) {
-					// TODO: Handle tcp sharing state and state transitions
-					String listenHost = js.getString("listenHost");
-					int listenPort = js.getInt("listenPort");
-					System.out.println("Tunnel registered succesfuly. You can connect to it at " + listenHost + ":" + listenPort);
+					if (state.get() != ClientState.WAITING_CONFIRM) {
+						throw new IllegalStateException("Invalid response " + response + " when state != WAITING_CONFIRM");
+					}
+					System.out.println("Tunnel registered succesfuly.");
+					if (js.has("tcpListenPorts")) {
+						JSONArray tcp = js.getJSONArray("tcpListenPorts");
+						if (!tcp.isEmpty()) {
+							System.out.println("TCP Tunnels:");
+							for (int i = 0; i < tcp.length(); i++) {
+								JSONObject p = tcp.getJSONObject(i);
+								System.out.println(String.format("  %s:%s --> %s:%s", p.getString("listenHost"), p.getInt("listenPort"), p.getString("targetHostname"), p.getInt("targetPort")));
+							}
+						}
+					}
+					setState(ClientState.TUNNEL_CONNECTED);
     				return;
 				} else if (response.equals("CONFIRM")){
-					// TODO: Handle tcp sharing state and state transitions
+					if (state.get() != ClientState.WAITING_RESPONSE) {
+						throw new IllegalStateException("Invalid response " + response + " when state != WAITING_RESPONSE");
+					}
 					Console console = System.console();
 					String confirmationUri = js.getString("confirmationUri");
 					String prompt1 = "Please open this URL in your browser in order to confirm the connection: %n%s";
@@ -163,9 +176,9 @@ public class JoatseClient implements WebSocketHandler {
 							System.out.println(confirmationUri);
 						}
 					}
+					setState(ClientState.WAITING_CONFIRM);
 					return;
 				} else if (response.equals("REJECTED")){
-					// TODO: Handle tcp sharing state and state transitions
 					log.error("Connection rejected. Cause: {}", js.getString("rejectionCause"));
 				} else {
     				throw new IllegalStateException("Unexpected response format or type");
@@ -216,18 +229,29 @@ public class JoatseClient implements WebSocketHandler {
 	public boolean supportsPartialMessages() {
 		return false;
 	}
+	
+	public static class TunnelRequestItem {
+		public long targetId = new Random().nextLong() & Long.MAX_VALUE;
+		public final String targetHostname;
+		public final int targetPort;
+		public final String targetDescription;
 
-	public void shareTcpPort(String targetPortDescription, Integer targetPortNumber) {
-		JSONObject js = new JSONObject();
-		js.put("request", "CONNECTION");
-		js.put("targetHostId", targetHostId);
-		js.put("targetHostName", targetHostname);
-		js.put("targetPort", targetPortNumber);
-		js.put("targetPortDescription", targetPortDescription);
-		// TODO: Handle tcp sharing state and state transitions
-		TextMessage message = new TextMessage(js.toString());
-		log.info("sending request: {}", message.getPayload());
-		jSession.sendMessage(message);
+		public TunnelRequestItem(String targetHostname, int targetPort, String targetDescription) {
+			this.targetHostname = targetHostname;
+			this.targetPort = targetPort;
+			this.targetDescription = targetDescription;
+		}
+	}
+
+	/**
+	 * Requested TCP tunnel connections
+	 */
+	public void createTunnel(Collection<TunnelRequestItem> tcpTunnels) {
+		if (state.get() != ClientState.WS_CONNECTED) {
+			throw new IllegalStateException("Invalid call to createTunnel when state != WS_CONNECTED");
+		}
+		jSession.createTunnel(tcpTunnels);
+		setState(ClientState.WAITING_RESPONSE);
 	}
 
 }
