@@ -3,6 +3,7 @@
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -59,16 +60,17 @@ public class JoatseTargetApplication implements ApplicationRunner {
 
 	@Override
 	public void run(ApplicationArguments args) throws Exception {
-		Collection<TunnelRequestItem> tcpTunnels = args.getOptionValues("shareTcp").stream()
-				.map((String x) -> prepareSocketConfig(x)).collect(Collectors.toList());
-		
-		JoatseClient jc = new JoatseClient(cloudUrl, qrMode)
-				.connect()
-				.waitUntilConnected();
+		Collection<TunnelRequestItem> tcpTunnels = Optional.ofNullable(args.getOptionValues("shareTcp"))
+				.orElseGet(() -> Collections.emptyList()).stream().map((String x) -> prepareSocketConfig(x))
+				.collect(Collectors.toList());
 		
 		if (tcpTunnels.isEmpty()) {
 			throw new CommandLineException("Expected at least one resource to share");
 		}
+
+		JoatseClient jc = new JoatseClient(cloudUrl, qrMode)
+				.connect()
+				.waitUntilConnected();
 		
 		jc.createTunnel(tcpTunnels);		
 		jc.waitUntilFinished();

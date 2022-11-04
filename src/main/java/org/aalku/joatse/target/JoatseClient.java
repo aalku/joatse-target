@@ -158,6 +158,7 @@ public class JoatseClient implements WebSocketHandler {
 					}
 					Console console = System.console();
 					String confirmationUri = js.getString("confirmationUri");
+					openUrl(confirmationUri);
 					String prompt1 = "Please open this URL in your browser in order to confirm the connection: %n%s";
 					String promptQr = "Or scan the next QR code.";
 					String qr = QrGenerator.getQr(qrMode, confirmationUri);
@@ -191,6 +192,20 @@ public class JoatseClient implements WebSocketHandler {
 		}
 		session.close();
 		setState(ClientState.FINISHED);
+	}
+
+	private void openUrl(String confirmationUri) throws URISyntaxException {
+		URI uri = new URI(confirmationUri);
+		if ((uri.getScheme().equals("http") || uri.getScheme().equals("https"))
+				&& uri.getHost().equalsIgnoreCase(new URI(cloudUrl).getHost())) {
+			try {
+				if (java.awt.Desktop.isDesktopSupported()) {
+					java.awt.Desktop.getDesktop().browse(uri);
+				}
+			} catch (Exception e) {
+				log.warn("Can't open confirmation URI: " + e, e);
+			}
+		}
 	}
 	
 	private void handleBinaryMessage(WebSocketSession session, BinaryMessage message) throws Exception {
