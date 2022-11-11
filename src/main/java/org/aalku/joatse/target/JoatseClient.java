@@ -4,6 +4,7 @@ import java.io.Console;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URL;
 import java.util.Collection;
 import java.util.Optional;
 import java.util.Random;
@@ -140,13 +141,23 @@ public class JoatseClient implements WebSocketHandler {
 						throw new IllegalStateException("Invalid response " + response + " when state != WAITING_CONFIRM");
 					}
 					System.out.println("Tunnel registered succesfuly.");
-					if (js.has("tcpListenPorts")) {
-						JSONArray tcp = js.getJSONArray("tcpListenPorts");
+					if (js.has("tcpTunnels")) {
+						JSONArray tcp = js.getJSONArray("tcpTunnels");
 						if (!tcp.isEmpty()) {
 							System.out.println("TCP Tunnels:");
 							for (int i = 0; i < tcp.length(); i++) {
 								JSONObject p = tcp.getJSONObject(i);
 								System.out.println(String.format("  %s:%s --> %s:%s", p.getString("listenHost"), p.getInt("listenPort"), p.getString("targetHostname"), p.getInt("targetPort")));
+							}
+						}
+					}
+					if (js.has("httpTunnels")) {
+						JSONArray tcp = js.getJSONArray("httpTunnels");
+						if (!tcp.isEmpty()) {
+							System.out.println("Http Tunnels:");
+							for (int i = 0; i < tcp.length(); i++) {
+								JSONObject p = tcp.getJSONObject(i);
+								System.out.println(String.format("  %s --> %s", p.getString("listenUrl"), p.getString("targetUrl")));
 							}
 						}
 					}
@@ -245,27 +256,42 @@ public class JoatseClient implements WebSocketHandler {
 		return false;
 	}
 	
-	public static class TunnelRequestItem {
+	public static class TunnelRequestItemTcp {
 		public long targetId = new Random().nextLong() & Long.MAX_VALUE;
 		public final String targetHostname;
 		public final int targetPort;
 		public final String targetDescription;
 
-		public TunnelRequestItem(String targetHostname, int targetPort, String targetDescription) {
+		public TunnelRequestItemTcp(String targetHostname, int targetPort, String targetDescription) {
 			this.targetHostname = targetHostname;
 			this.targetPort = targetPort;
 			this.targetDescription = targetDescription;
 		}
 	}
 
+	public static class TunnelRequestItemHttp extends TunnelRequestItemTcp {
+		/**
+		 * we store the url to pass it to the cloud but we will not use it anymore. For
+		 * this end this is TCP
+		 */
+		public final URL targetUrl;
+
+		public TunnelRequestItemHttp(URL url, String targetDescription) {
+			super(url.getHost(), Optional.of(url.getPort()).filter(p -> p > 0)
+					.orElseGet(() -> url.getDefaultPort()), targetDescription);
+			this.targetUrl = url;
+		}
+	}
+
 	/**
 	 * Requested TCP tunnel connections
+	 * @param httpTunnels 
 	 */
-	public void createTunnel(Collection<TunnelRequestItem> tcpTunnels) {
+	public void createTunnel(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels) {
 		if (state.get() != ClientState.WS_CONNECTED) {
 			throw new IllegalStateException("Invalid call to createTunnel when state != WS_CONNECTED");
 		}
-		jSession.createTunnel(tcpTunnels);
+		jSession.createTunnel(tcpTunnels, httpTunnels);
 		setState(ClientState.WAITING_RESPONSE);
 	}
 

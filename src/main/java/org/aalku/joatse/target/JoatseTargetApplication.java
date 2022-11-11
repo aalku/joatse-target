@@ -1,6 +1,8 @@
 	package org.aalku.joatse.target;
 
 import java.net.InetAddress;
+import java.net.MalformedURLException;
+import java.net.URL;
 import java.net.UnknownHostException;
 import java.util.Collection;
 import java.util.Collections;
@@ -9,7 +11,8 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
-import org.aalku.joatse.target.JoatseClient.TunnelRequestItem;
+import org.aalku.joatse.target.JoatseClient.TunnelRequestItemHttp;
+import org.aalku.joatse.target.JoatseClient.TunnelRequestItemTcp;
 import org.aalku.joatse.target.tools.QrGenerator.QrMode;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
@@ -31,7 +34,7 @@ public class JoatseTargetApplication implements ApplicationRunner {
 //	private String targetHostId;
 //	
 //	@Value("${target.host.name:localhost}")
-//	private String targetHostname;
+//	private String targetDomain;
 //
 //	@Value("${target.port:}")
 //	private Integer targetPort;
@@ -60,11 +63,15 @@ public class JoatseTargetApplication implements ApplicationRunner {
 
 	@Override
 	public void run(ApplicationArguments args) throws Exception {
-		Collection<TunnelRequestItem> tcpTunnels = Optional.ofNullable(args.getOptionValues("shareTcp"))
-				.orElseGet(() -> Collections.emptyList()).stream().map((String x) -> prepareSocketConfig(x))
+		Collection<TunnelRequestItemTcp> tcpTunnels = Optional.ofNullable(args.getOptionValues("shareTcp"))
+				.orElseGet(() -> Collections.emptyList()).stream().map((String x) -> prepareTcpConfig(x))
 				.collect(Collectors.toList());
 		
-		if (tcpTunnels.isEmpty()) {
+		Collection<TunnelRequestItemHttp> httpTunnels = Optional.ofNullable(args.getOptionValues("shareHttp"))
+				.orElseGet(() -> Collections.emptyList()).stream().map((String x) -> prepareHttpConfig(x))
+				.collect(Collectors.toList());
+
+		if (tcpTunnels.isEmpty() && httpTunnels.isEmpty()) {
 			throw new CommandLineException("Expected at least one resource to share");
 		}
 
@@ -72,11 +79,11 @@ public class JoatseTargetApplication implements ApplicationRunner {
 				.connect()
 				.waitUntilConnected();
 		
-		jc.createTunnel(tcpTunnels);		
+		jc.createTunnel(tcpTunnels, httpTunnels);
 		jc.waitUntilFinished();
 	}
 	
-	private TunnelRequestItem prepareSocketConfig(String arg) throws CommandLineException {
+	private TunnelRequestItemTcp prepareTcpConfig(String arg) throws CommandLineException {
 		Pattern pattern = Pattern.compile("^((.*)#)?([^:#]+):([1-9][0-9]*)$"); // Organization beats optimization here
 		Matcher m = pattern.matcher(arg);
 		if (m.matches()) {
@@ -88,10 +95,34 @@ public class JoatseTargetApplication implements ApplicationRunner {
 			} catch (UnknownHostException e) {
 				throw new CommandLineException("Unknown host: " + host); 
 			}
-			return new TunnelRequestItem(host, port, description);
+			return new TunnelRequestItemTcp(host, port, description);
 		} else {
 			throw new CommandLineException("shareTcp must be description#targetHost:port or targetHost:port");
 		}
 	}
+	
+	private TunnelRequestItemHttp prepareHttpConfig(String arg) throws CommandLineException {
+		Pattern pattern = Pattern.compile("^((.*)#)?(.*)$"); // Organization beats optimization here
+		Matcher m = pattern.matcher(arg);
+		if (m.matches()) {
+			String url = m.group(3);
+			String description = Optional.of(m.group(1)).filter(s->!s.isEmpty()).orElseGet(()->(url));
+			URL oUrl;
+			try {
+				oUrl = new URL(url);
+			} catch (MalformedURLException e1) {
+				throw new CommandLineException("Malformed URL: " + url); 
+			}
+			try {
+				InetAddress.getByName(oUrl.getHost()); // Fail fast
+			} catch (UnknownHostException e) {
+				throw new CommandLineException("Unknown host: " + oUrl.getHost()); 
+			}
+			return new TunnelRequestItemHttp(oUrl, description);
+		} else {
+			throw new CommandLineException("shareTcp must be description#targetHost:port or targetHost:port");
+		}
+	}
+
 
 }

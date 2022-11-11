@@ -11,7 +11,8 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.locks.ReentrantLock;
 
-import org.aalku.joatse.target.JoatseClient.TunnelRequestItem;
+import org.aalku.joatse.target.JoatseClient.TunnelRequestItemHttp;
+import org.aalku.joatse.target.JoatseClient.TunnelRequestItemTcp;
 import org.aalku.joatse.target.tools.io.WebSocketSendWorker;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -33,9 +34,9 @@ public class JoatseSession {
 	ReentrantLock lock = new ReentrantLock();
 	
 	/**
-	 * Requested connections
+	 * Requested tcp connections
 	 */
-	private Map<Long, TunnelRequestItem> tcpConnectionTargets = new LinkedHashMap<>();
+	private Map<Long, TunnelRequestItemTcp> tcpConnectionTargets = new LinkedHashMap<>();
 
 	/**
 	 * Stablished TCP tunnel connections
@@ -45,6 +46,7 @@ public class JoatseSession {
 	private WebSocketSendWorker wsSendWorker;
 
 	private WebSocketSession session;
+
 	
 	public JoatseSession(WebSocketSession session) {
 		this.session = session;
@@ -70,7 +72,7 @@ public class JoatseSession {
 		if (type == TunnelTcpConnection.MESSAGE_TYPE_NEW_TCP_SOCKET) {
 			long socketId = buffer.getLong();
 			long targetId = buffer.getLong();
-			TunnelRequestItem target = tcpConnectionTargets.get(targetId);
+			TunnelRequestItemTcp target = tcpConnectionTargets.get(targetId);
 			InetSocketAddress targetAddress = new InetSocketAddress(InetAddress.getByName(target.targetHostname), target.targetPort);
 			TunnelTcpConnection c = new TunnelTcpConnection(this, targetAddress, socketId, (e)->this.close(e));
 			c.getCloseStatus().thenAccept(remote->{
@@ -154,21 +156,35 @@ public class JoatseSession {
 		return wsSendWorker.sendMessage(message);
 	}
 
-	public void createTunnel(Collection<TunnelRequestItem> tcpTunnels) {
+	public void createTunnel(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels) {
 		// TODO udp ports
 		JSONObject js = new JSONObject();
 		js.put("request", "CONNECTION");
-		JSONArray tcpJs = new JSONArray();
-		for (TunnelRequestItem i: tcpTunnels) {
-			tcpConnectionTargets.put(i.targetId, i);
-			JSONObject o = new JSONObject();
-			o.put("targetId", i.targetId);
-			o.put("targetDescription", i.targetDescription);
-			o.put("targetHostName", i.targetHostname);
-			o.put("targetPort", i.targetPort);
-			tcpJs.put(o);
+		if (!tcpTunnels.isEmpty()) {
+			JSONArray tcpJs = new JSONArray();
+			for (TunnelRequestItemTcp i: tcpTunnels) {
+				tcpConnectionTargets.put(i.targetId, i);
+				JSONObject o = new JSONObject();
+				o.put("targetId", i.targetId);
+				o.put("targetDescription", i.targetDescription);
+				o.put("targetHostName", i.targetHostname);
+				o.put("targetPort", i.targetPort);
+				tcpJs.put(o);
+			}
+			js.put("tcpTunnels", tcpJs);
 		}
-		js.put("tcpTunnels", tcpJs);
+		if (!httpTunnels.isEmpty()) {
+			JSONArray httpJs = new JSONArray();
+			for (TunnelRequestItemHttp i: httpTunnels) {
+				tcpConnectionTargets.put(i.targetId, i); // It's tcp too
+				JSONObject o = new JSONObject();
+				o.put("targetId", i.targetId);
+				o.put("targetDescription", i.targetDescription);
+				o.put("targetUrl", i.targetUrl.toString());
+				httpJs.put(o);
+			}
+			js.put("httpTunnels", httpJs);
+		}
 		TextMessage message = new TextMessage(js.toString());
 		log.info("sending request: {}", message.getPayload());
 		sendMessage(message);
