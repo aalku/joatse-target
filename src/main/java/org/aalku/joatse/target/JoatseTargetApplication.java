@@ -2,6 +2,7 @@
 
 import java.net.InetAddress;
 import java.net.MalformedURLException;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.UnknownHostException;
 import java.util.Collection;
@@ -68,13 +69,29 @@ public class JoatseTargetApplication implements ApplicationRunner {
 				.collect(Collectors.toList());
 		
 		Collection<TunnelRequestItemHttp> httpTunnels = Optional.ofNullable(args.getOptionValues("shareHttp"))
-				.orElseGet(() -> Collections.emptyList()).stream().map((String x) -> prepareHttpConfig(x))
+				.orElseGet(() -> Collections.emptyList()).stream().map((String x) -> prepareHttpConfig(x, false))
 				.collect(Collectors.toList());
+		
+		Optional.ofNullable(args.getOptionValues("shareHttpUnsafe"))
+				.orElseGet(() -> Collections.emptyList()).stream().map((String x) -> prepareHttpConfig(x, true))
+				.forEachOrdered(x->httpTunnels.add(x));
+
 
 		if (tcpTunnels.isEmpty() && httpTunnels.isEmpty()) {
 			throw new CommandLineException("Expected at least one resource to share");
 		}
+		if (Boolean.getBoolean("infinite")) { // Useful during development
+			while (!Thread.interrupted()) {
+				run(tcpTunnels, httpTunnels);
+				Thread.sleep(1000);
+			}
+		} else {
+			run(tcpTunnels, httpTunnels);
+		}
+	}
 
+	private void run(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels)
+			throws URISyntaxException {
 		JoatseClient jc = new JoatseClient(cloudUrl, qrMode)
 				.connect()
 				.waitUntilConnected();
@@ -89,7 +106,7 @@ public class JoatseTargetApplication implements ApplicationRunner {
 		if (m.matches()) {
 			String host = m.group(3);
 			int port = Integer.parseInt(m.group(4));
-			String description = Optional.of(m.group(1)).filter(s->!s.isEmpty()).orElseGet(()->(host + ":" + port));
+			String description = Optional.of(m.group(2)).filter(s->!s.isEmpty()).orElseGet(()->(host + ":" + port));
 			try {
 				InetAddress.getByName(host); // Fail fast
 			} catch (UnknownHostException e) {
@@ -101,12 +118,12 @@ public class JoatseTargetApplication implements ApplicationRunner {
 		}
 	}
 	
-	private TunnelRequestItemHttp prepareHttpConfig(String arg) throws CommandLineException {
+	private TunnelRequestItemHttp prepareHttpConfig(String arg, boolean unsafe) throws CommandLineException {
 		Pattern pattern = Pattern.compile("^((.*)#)?(.*)$"); // Organization beats optimization here
 		Matcher m = pattern.matcher(arg);
 		if (m.matches()) {
 			String url = m.group(3);
-			String description = Optional.of(m.group(1)).filter(s->!s.isEmpty()).orElseGet(()->(url));
+			String description = Optional.of(m.group(2)).filter(s->!s.isEmpty()).orElseGet(()->(url));
 			URL oUrl;
 			try {
 				oUrl = new URL(url);
@@ -118,7 +135,7 @@ public class JoatseTargetApplication implements ApplicationRunner {
 			} catch (UnknownHostException e) {
 				throw new CommandLineException("Unknown host: " + oUrl.getHost()); 
 			}
-			return new TunnelRequestItemHttp(oUrl, description);
+			return new TunnelRequestItemHttp(oUrl, description, unsafe);
 		} else {
 			throw new CommandLineException("shareTcp must be description#targetHost:port or targetHost:port");
 		}

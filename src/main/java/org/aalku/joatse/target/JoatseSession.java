@@ -181,6 +181,7 @@ public class JoatseSession {
 				o.put("targetId", i.targetId);
 				o.put("targetDescription", i.targetDescription);
 				o.put("targetUrl", i.targetUrl.toString());
+				o.put("unsafe", Boolean.toString(i.unsafe));
 				httpJs.put(o);
 			}
 			js.put("httpTunnels", httpJs);

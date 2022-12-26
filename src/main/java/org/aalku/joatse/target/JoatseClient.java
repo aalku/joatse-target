@@ -142,22 +142,42 @@ public class JoatseClient implements WebSocketHandler {
 					}
 					System.out.println("Tunnel registered succesfuly.");
 					if (js.has("tcpTunnels")) {
-						JSONArray tcp = js.getJSONArray("tcpTunnels");
-						if (!tcp.isEmpty()) {
+						JSONArray tcpTunnels = js.getJSONArray("tcpTunnels");
+						if (!tcpTunnels.isEmpty()) {
 							System.out.println("TCP Tunnels:");
-							for (int i = 0; i < tcp.length(); i++) {
-								JSONObject p = tcp.getJSONObject(i);
-								System.out.println(String.format("  %s:%s --> %s:%s", p.getString("listenHost"), p.getInt("listenPort"), p.getString("targetHostname"), p.getInt("targetPort")));
+							try {
+								for (int i = 0; i < tcpTunnels.length(); i++) {
+									JSONObject p = tcpTunnels.getJSONObject(i);
+									JSONObject listenPortObject = p.getJSONObject("listenPort");
+									for (String clientAddress: listenPortObject.keySet()) {
+										int listenPort = listenPortObject.getInt(clientAddress);
+										System.out.println(String.format("  %s:%s --> %s:%s from client %s", p.getString("listenHost"), listenPort, p.getString("targetHostname"), p.getInt("targetPort"), clientAddress));
+									}
+								}
+							} catch (Exception e) {
+								System.err.println("Error printing tcp tunnels");
+								System.err.println("tcpTunnels element is: " + tcpTunnels.toString());
+								e.printStackTrace();
 							}
 						}
 					}
 					if (js.has("httpTunnels")) {
-						JSONArray tcp = js.getJSONArray("httpTunnels");
-						if (!tcp.isEmpty()) {
+						JSONArray httpTunnels = js.getJSONArray("httpTunnels");
+						if (!httpTunnels.isEmpty()) {
 							System.out.println("Http Tunnels:");
-							for (int i = 0; i < tcp.length(); i++) {
-								JSONObject p = tcp.getJSONObject(i);
-								System.out.println(String.format("  %s --> %s", p.getString("listenUrl"), p.getString("targetUrl")));
+							try {
+								for (int i = 0; i < httpTunnels.length(); i++) {
+									JSONObject p = httpTunnels.getJSONObject(i);
+									JSONObject listenUrlObject = p.getJSONObject("listenUrl");
+									for (String clientAddress: listenUrlObject.keySet()) {
+										String listenUrl = listenUrlObject.getString(clientAddress);
+										System.out.println(String.format("  %s --> %s from client %s", listenUrl, p.getString("targetUrl"), clientAddress));
+									}
+								}
+							} catch (Exception e) {
+								System.err.println("Error printing http tunnels");
+								System.err.println("httpTunnels element is: " + httpTunnels.toString());
+								e.printStackTrace();
 							}
 						}
 					}
@@ -275,11 +295,13 @@ public class JoatseClient implements WebSocketHandler {
 		 * this end this is TCP
 		 */
 		public final URL targetUrl;
+		public final boolean unsafe;
 
-		public TunnelRequestItemHttp(URL url, String targetDescription) {
+		public TunnelRequestItemHttp(URL url, String targetDescription, boolean unsafe) {
 			super(url.getHost(), Optional.of(url.getPort()).filter(p -> p > 0)
 					.orElseGet(() -> url.getDefaultPort()), targetDescription);
 			this.targetUrl = url;
+			this.unsafe = unsafe;
 		}
 	}
 
