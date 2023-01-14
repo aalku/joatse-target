@@ -2,8 +2,11 @@ package org.aalku.joatse.target.tools.io;
 
 
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.AsynchronousSocketChannel;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public interface IOTools {
 	public interface IOTask<E> {
@@ -51,6 +54,42 @@ public interface IOTools {
 
 	public static String toString(ByteBuffer data) {
 		return toString(data, data.position(), data.limit() - data.position());
+	}
+
+	public static Pattern globToRegex(String allowedAddress, boolean caseSensitive) {
+		StringBuffer sb = new StringBuffer();
+		int flags = caseSensitive ? 0 : Pattern.CASE_INSENSITIVE;
+		Pattern p = Pattern.compile("[*]|[^\\w*]+", flags);
+		Matcher m = p.matcher(allowedAddress);
+		while (m.find()) {
+			String x = m.group();
+			m.appendReplacement(sb, x.equals("*") ? ".*" : Matcher.quoteReplacement(Pattern.quote(x)));
+		}
+		m.appendTail(sb);
+		return Pattern.compile(sb.toString());
+	}
+
+	static boolean testInetAddressPatternMatch(String allowedAddress, InetSocketAddress target) {
+		// TODO IPv6 support
+		final String allowedHost;
+		final Integer allowedPort;
+		String[] split = allowedAddress.split(":", 2);
+		allowedHost = split[0];
+		allowedPort = split.length > 1 ? split[1].equals("*") ? null : Integer.parseInt(split[1]) : null;
+		
+		if (allowedPort != null && !allowedPort.equals(target.getPort())) {
+			// Ports don't match
+			return false;
+		}		
+		// Ports do match
+		
+		if (allowedHost.equals("*")) {
+			return true;
+		}
+		
+		String targetHost = target.getHostString();
+		Pattern p = IOTools.globToRegex(allowedHost, false);
+		return p.matcher(targetHost).matches();
 	}
 	
 }

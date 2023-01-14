@@ -8,11 +8,17 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemHttp;
+import org.aalku.joatse.target.JoatseClient.TunnelRequestItemSocks5;
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemTcp;
+import org.aalku.joatse.target.connection.AbstractTunnelTcpConnection;
+import org.aalku.joatse.target.connection.BasicTunnelTcpConnection;
+import org.aalku.joatse.target.connection.Socks5TunnelTcpConnection;
 import org.aalku.joatse.target.tools.io.WebSocketSendWorker;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -34,14 +40,17 @@ public class JoatseSession {
 	ReentrantLock lock = new ReentrantLock();
 	
 	/**
-	 * Requested tcp connections
+	 * Requested tcp and http connections
 	 */
-	private Map<Long, TunnelRequestItemTcp> tcpConnectionTargets = new LinkedHashMap<>();
-
+	private Map<Long, TunnelRequestItemTcp> tcpConnectionRequestTargets = new LinkedHashMap<>();
+	
+	/** Requested socks5 connecrtion */
+	private AtomicReference<TunnelRequestItemSocks5> tunnelRequestItemSocks5 = new AtomicReference<JoatseClient.TunnelRequestItemSocks5>(null);
+	
 	/**
 	 * Stablished TCP tunnel connections
 	 */
-	private Map<Long, TunnelTcpConnection> tcpConnectionMap = new LinkedHashMap<>();
+	private Map<Long, AbstractTunnelTcpConnection> tcpConnectionMap = new LinkedHashMap<>();
 	
 	private WebSocketSendWorker wsSendWorker;
 
@@ -53,10 +62,10 @@ public class JoatseSession {
 		this.wsSendWorker = new WebSocketSendWorker(this.session);
 	}
 	
-	void add(TunnelTcpConnection c) {
+	void add(AbstractTunnelTcpConnection c) {
 		lock.lock();
 		try {
-			tcpConnectionMap.put(c.socketId, c);
+			tcpConnectionMap.put(c.getSocketId(), c);
 		} finally {
 			lock.unlock();
 		}
@@ -69,34 +78,59 @@ public class JoatseSession {
 			throw new IOException("Unsupported BinaryMessage protocol version: " + version);
 		}
 		byte type = buffer.get();
-		if (type == TunnelTcpConnection.MESSAGE_TYPE_NEW_TCP_SOCKET) {
+		if (type == AbstractTunnelTcpConnection.MESSAGE_TYPE_NEW_SOCKET) {
 			long socketId = buffer.getLong();
 			long targetId = buffer.getLong();
-			TunnelRequestItemTcp target = tcpConnectionTargets.get(targetId);
-			InetSocketAddress targetAddress = new InetSocketAddress(InetAddress.getByName(target.targetHostname), target.targetPort);
-			TunnelTcpConnection c = new TunnelTcpConnection(this, targetAddress, socketId, (e)->this.close(e));
-			c.getCloseStatus().thenAccept(remote->{
-				// Connection closed ok
-				if (remote == null) {
-					log.info("TCP tunnel closed");
-				} else if (remote) {
-					log.info("TCP tunnel closed by target side");
+			TunnelRequestItemTcp target = tcpConnectionRequestTargets.get(targetId);
+			if (target != null) {
+				InetSocketAddress targetAddress = new InetSocketAddress(InetAddress.getByName(target.targetHostname), target.targetPort);
+				BasicTunnelTcpConnection c = new BasicTunnelTcpConnection(this, targetAddress, socketId, (e)->this.close(e));
+				add(c);
+				c.getCloseStatus().thenAccept(remote->{
+					// Connection closed ok
+					if (remote == null) {
+						log.info("TCP tunnel closed");
+					} else if (remote) {
+						log.info("TCP tunnel closed by target side");
+					} else {
+						log.info("TCP tunnel closed by this side");
+					}
+				}).exceptionally(e->{
+					log.error("TCP tunnel closed because of error: {}", e, e);
+					return null;
+				});
+			} else {
+				Optional<TunnelRequestItemSocks5> socks5 = Optional.ofNullable(tunnelRequestItemSocks5.get()).filter(x->x.targetId == targetId);
+				if (socks5.isPresent()) {
+					// Socks5
+					Socks5TunnelTcpConnection c = new Socks5TunnelTcpConnection(this, socketId, (e)->this.close(e), socks5.get());
+					add(c);
+					c.getCloseStatus().thenAccept(remote->{
+						// Connection closed ok
+						if (remote == null) {
+							log.info("Socks5 TCP tunnel closed");
+						} else if (remote) {
+							log.info("Socks5 TCP tunnel closed by target side");
+						} else {
+							log.info("Socks5 TCP tunnel closed by this side");
+						}
+					}).exceptionally(e->{
+						log.error("TCP tunnel closed because of error: {}", e, e);
+						return null;
+					});
 				} else {
-					log.info("TCP tunnel closed by this side");
+					log.warn("Received new socket for unknown target id: " + targetId);
 				}
-			}).exceptionally(e->{
-				log.error("TCP tunnel closed because of error: {}", e, e);
-				return null;
-			});
-		} else if (TunnelTcpConnection.messageTypesHandled.contains(type)) {
+			}
+		} else if (AbstractTunnelTcpConnection.messageTypesHandled.contains(type)) {
 			long socketId = buffer.getLong();
 			Runnable runWithoutLock = null; 
-			TunnelTcpConnection c = null;
+			AbstractTunnelTcpConnection c = null;
 			lock.lock();
 			try {
 				c = tcpConnectionMap.get(socketId);
 				if (c == null) {
-					log.warn("TunnelTcpConnection is not open: " + socketId);
+					log.warn("AbstractTunnelTcpConnection is not open: " + socketId);
 					return; // Abort withouut closing the session
 				}
 				runWithoutLock = c.receivedMessage(buffer, type); // blocking with lock is ok
@@ -127,8 +161,8 @@ public class JoatseSession {
 			 * We need a copy since c.close() will update the map and we cannot iterate the
 			 * map at the same time.
 			 */
-			ArrayList<TunnelTcpConnection> copy = new ArrayList<TunnelTcpConnection>(tcpConnectionMap.values());
-			for (TunnelTcpConnection c: copy) {
+			ArrayList<AbstractTunnelTcpConnection> copy = new ArrayList<AbstractTunnelTcpConnection>(tcpConnectionMap.values());
+			for (AbstractTunnelTcpConnection c: copy) {
 				lock.unlock(); // Unlock while closing it so we don't share the lock with anyone else
 				try {
 					c.close(e, false);
@@ -142,10 +176,10 @@ public class JoatseSession {
 		}
 	}
 
-	public void remove(TunnelTcpConnection c) {
+	public void remove(AbstractTunnelTcpConnection c) {
 		lock.lock();
 		try {
-			tcpConnectionMap.remove(c.socketId, c);
+			tcpConnectionMap.remove(c.getSocketId(), c);
 			c.assertClosed();
 		} finally {
 			lock.unlock();
@@ -156,14 +190,15 @@ public class JoatseSession {
 		return wsSendWorker.sendMessage(message);
 	}
 
-	public void createTunnel(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels) {
+	public void createTunnel(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels,
+			Optional<TunnelRequestItemSocks5> socks5Tunnel) {
 		// TODO udp ports
 		JSONObject js = new JSONObject();
 		js.put("request", "CONNECTION");
 		if (!tcpTunnels.isEmpty()) {
 			JSONArray tcpJs = new JSONArray();
 			for (TunnelRequestItemTcp i: tcpTunnels) {
-				tcpConnectionTargets.put(i.targetId, i);
+				tcpConnectionRequestTargets.put(i.targetId, i);
 				JSONObject o = new JSONObject();
 				o.put("targetId", i.targetId);
 				o.put("targetDescription", i.targetDescription);
@@ -176,7 +211,7 @@ public class JoatseSession {
 		if (!httpTunnels.isEmpty()) {
 			JSONArray httpJs = new JSONArray();
 			for (TunnelRequestItemHttp i: httpTunnels) {
-				tcpConnectionTargets.put(i.targetId, i); // It's tcp too
+				tcpConnectionRequestTargets.put(i.targetId, i); // It's tcp too
 				JSONObject o = new JSONObject();
 				o.put("targetId", i.targetId);
 				o.put("targetDescription", i.targetDescription);
@@ -186,6 +221,14 @@ public class JoatseSession {
 			}
 			js.put("httpTunnels", httpJs);
 		}
+		socks5Tunnel.ifPresent(t->{
+			JSONArray s5J = new JSONArray();
+			this.tunnelRequestItemSocks5.set(t);
+			JSONObject o = new JSONObject();
+			o.put("targetId", t.targetId);
+			s5J.put(o);
+			js.put("socks5Tunnel", s5J);
+		});
 		TextMessage message = new TextMessage(js.toString());
 		log.info("sending request: {}", message.getPayload());
 		sendMessage(message);

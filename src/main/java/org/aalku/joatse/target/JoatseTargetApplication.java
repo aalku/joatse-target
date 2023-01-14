@@ -7,12 +7,14 @@ import java.net.URL;
 import java.net.UnknownHostException;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.List;
 import java.util.Optional;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemHttp;
+import org.aalku.joatse.target.JoatseClient.TunnelRequestItemSocks5;
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemTcp;
 import org.aalku.joatse.target.tools.QrGenerator.QrMode;
 import org.springframework.beans.factory.annotation.Value;
@@ -76,27 +78,30 @@ public class JoatseTargetApplication implements ApplicationRunner {
 				.orElseGet(() -> Collections.emptyList()).stream().map((String x) -> prepareHttpConfig(x, true))
 				.forEachOrdered(x->httpTunnels.add(x));
 
+		Optional<TunnelRequestItemSocks5> socks5Tunnel = prepareSocks5Config(Optional.ofNullable(args.getOptionValues("shareSocks5"))
+				.orElseGet(() -> Collections.emptyList()).stream().map((String x) -> prepareSocks5Config(x))
+				.collect(Collectors.toList()));
 
-		if (tcpTunnels.isEmpty() && httpTunnels.isEmpty()) {
+		if (tcpTunnels.isEmpty() && httpTunnels.isEmpty() && !socks5Tunnel.isPresent()) {
 			throw new CommandLineException("Expected at least one resource to share");
 		}
 		if (Boolean.getBoolean("infinite")) { // Useful during development
 			while (!Thread.interrupted()) {
-				run(tcpTunnels, httpTunnels);
+				run(tcpTunnels, httpTunnels, socks5Tunnel);
 				Thread.sleep(1000);
 			}
 		} else {
-			run(tcpTunnels, httpTunnels);
+			run(tcpTunnels, httpTunnels, socks5Tunnel);
 		}
 	}
 
-	private void run(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels)
+	private void run(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels, Optional<TunnelRequestItemSocks5> socks5Tunnel)
 			throws URISyntaxException {
 		JoatseClient jc = new JoatseClient(cloudUrl, qrMode)
 				.connect()
 				.waitUntilConnected();
 		
-		jc.createTunnel(tcpTunnels, httpTunnels);
+		jc.createTunnel(tcpTunnels, httpTunnels, socks5Tunnel);
 		jc.waitUntilFinished();
 	}
 	
@@ -139,6 +144,20 @@ public class JoatseTargetApplication implements ApplicationRunner {
 		} else {
 			throw new CommandLineException("shareTcp must be description#targetHost:port or targetHost:port");
 		}
+	}
+
+	private String prepareSocks5Config(String arg) throws CommandLineException {
+		Pattern pattern = Pattern.compile("^([^, :]+(:[0-9]+)?|[*])$");
+		Matcher m = pattern.matcher(arg);
+		if (m.matches()) {
+			return m.group(1);
+		} else {
+			throw new CommandLineException("shareSocks5 must be targetHost[:port] or *");
+		}
+	}
+	
+	private Optional<TunnelRequestItemSocks5> prepareSocks5Config(List<String> items) {
+		return items.isEmpty() ? Optional.empty() : Optional.of(new TunnelRequestItemSocks5(items));
 	}
 
 

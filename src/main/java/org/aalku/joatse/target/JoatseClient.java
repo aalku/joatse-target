@@ -304,16 +304,36 @@ public class JoatseClient implements WebSocketHandler {
 			this.unsafe = unsafe;
 		}
 	}
+	
+	public static class TunnelRequestItemSocks5 {
+		public long targetId = new Random().nextLong() & Long.MAX_VALUE;
+		private Collection<String> authorizedTargets;
 
+		public TunnelRequestItemSocks5(Collection<String> authorizedTargets) {
+			this.setAuthorizedTargets(authorizedTargets);
+		}
+
+		public Collection<String> getAuthorizedTargets() {
+			return authorizedTargets;
+		}
+
+		public void setAuthorizedTargets(Collection<String> authorizedTargets) {
+			this.authorizedTargets = authorizedTargets;
+		}
+	}
+
+	
 	/**
-	 * Requested TCP tunnel connections
-	 * @param httpTunnels 
+	 * @param tcpTunnels: Requested TCP tunnel connections
+	 * @param httpTunnels: Requested HTTP tunnel connections
+	 * @param socks5Tunnel: Requested Socks5 tunnel connection 
 	 */
-	public void createTunnel(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels) {
+	public void createTunnel(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels,
+			Optional<TunnelRequestItemSocks5> socks5Tunnel) {
 		if (state.get() != ClientState.WS_CONNECTED) {
 			throw new IllegalStateException("Invalid call to createTunnel when state != WS_CONNECTED");
 		}
-		jSession.createTunnel(tcpTunnels, httpTunnels);
+		jSession.createTunnel(tcpTunnels, httpTunnels, socks5Tunnel);
 		setState(ClientState.WAITING_RESPONSE);
 	}
 
