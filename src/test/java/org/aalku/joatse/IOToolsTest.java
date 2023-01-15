@@ -19,6 +19,7 @@ class IOToolsTest {
 
 	@Test
 	final void testInetAddressPatternMatch() {
+		
 		Assertions.assertTrue(IOTools.testInetAddressPatternMatch("1.1.1.*", InetSocketAddress.createUnresolved("1.1.1.1", 1234)));
 		Assertions.assertTrue(IOTools.testInetAddressPatternMatch("1.1.1.1", InetSocketAddress.createUnresolved("1.1.1.1", 1234)));
 		Assertions.assertTrue(IOTools.testInetAddressPatternMatch("1.1.1.*:*", InetSocketAddress.createUnresolved("1.1.1.1", 1234)));
@@ -28,6 +29,10 @@ class IOToolsTest {
 		Assertions.assertFalse(IOTools.testInetAddressPatternMatch("1.1.1.*:123", InetSocketAddress.createUnresolved("1.1.1.1", 1234)));
 		Assertions.assertFalse(IOTools.testInetAddressPatternMatch("1.1.1.1.*:1234", InetSocketAddress.createUnresolved("1.1.1.1", 1234)));
 		Assertions.assertFalse(IOTools.testInetAddressPatternMatch("myhost:1234", InetSocketAddress.createUnresolved("www.myhost.abc", 1234)));
+
+		Assertions.assertTrue(IOTools.testInetAddressPatternMatch("localhost", InetSocketAddress.createUnresolved("127.0.0.1", 1234)));
+		Assertions.assertTrue(IOTools.testInetAddressPatternMatch("localhost", InetSocketAddress.createUnresolved("::1", 1234)));
+
 	}
 
 	

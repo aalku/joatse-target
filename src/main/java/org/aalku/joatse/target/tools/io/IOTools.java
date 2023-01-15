@@ -2,9 +2,13 @@ package org.aalku.joatse.target.tools.io;
 
 
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.nio.channels.AsynchronousSocketChannel;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -89,7 +93,21 @@ public interface IOTools {
 		
 		String targetHost = target.getHostString();
 		Pattern p = IOTools.globToRegex(allowedHost, false);
-		return p.matcher(targetHost).matches();
+		boolean matches = p.matcher(targetHost).matches();
+		
+		if (!matches) {
+			/* Let's see if any is a host and can ve resolver to addresses and match that way */
+			try {
+				HashSet<InetAddress> t = new HashSet<>(Arrays.asList(InetAddress.getAllByName(targetHost)));
+				matches = (allowedHost.contains("*") ? Arrays.asList(allowedHost)
+						: Arrays.asList(InetAddress.getAllByName(allowedHost))).stream().filter(x -> t.contains(x))
+						.findAny().isPresent();
+			} catch (UnknownHostException e) {
+				return false;
+			}
+		}
+		
+		return matches;
 	}
 	
 }
