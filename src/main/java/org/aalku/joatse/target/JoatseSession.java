@@ -9,6 +9,7 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
@@ -19,12 +20,14 @@ import org.aalku.joatse.target.JoatseClient.TunnelRequestItemTcp;
 import org.aalku.joatse.target.connection.AbstractTunnelTcpConnection;
 import org.aalku.joatse.target.connection.BasicTunnelTcpConnection;
 import org.aalku.joatse.target.connection.Socks5TunnelTcpConnection;
+import org.aalku.joatse.target.tools.io.IOTools;
 import org.aalku.joatse.target.tools.io.WebSocketSendWorker;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.socket.BinaryMessage;
+import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketMessage;
 import org.springframework.web.socket.WebSocketSession;
@@ -173,6 +176,7 @@ public class JoatseSession {
 		} finally {
 			lock.unlock();
 			wsSendWorker.close();
+			IOTools.runFailable(()->session.close(CloseStatus.NORMAL));
 		}
 	}
 
@@ -191,7 +195,7 @@ public class JoatseSession {
 	}
 
 	public void createTunnel(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels,
-			Optional<TunnelRequestItemSocks5> socks5Tunnel) {
+			Optional<TunnelRequestItemSocks5> socks5Tunnel, Optional<UUID> preconfirmUuid) {
 		// TODO udp ports
 		JSONObject js = new JSONObject();
 		js.put("request", "CONNECTION");
@@ -202,7 +206,7 @@ public class JoatseSession {
 				JSONObject o = new JSONObject();
 				o.put("targetId", i.targetId);
 				o.put("targetDescription", i.targetDescription);
-				o.put("targetHostName", i.targetHostname);
+				o.put("targetHostname", i.targetHostname);
 				o.put("targetPort", i.targetPort);
 				tcpJs.put(o);
 			}
@@ -228,6 +232,9 @@ public class JoatseSession {
 			o.put("targetId", t.targetId);
 			s5J.put(o);
 			js.put("socks5Tunnel", s5J);
+		});
+		preconfirmUuid.ifPresent(uuid->{
+			js.put("preconfirmed", uuid.toString());
 		});
 		TextMessage message = new TextMessage(js.toString());
 		log.info("sending request: {}", message.getPayload());

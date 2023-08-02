@@ -5,12 +5,12 @@
 	<parent>
 		<groupId>org.springframework.boot</groupId>
 		<artifactId>spring-boot-starter-parent</artifactId>
-		<version>2.7.5</version>
+		<version>2.7.14</version>
 		<relativePath/> <!-- lookup parent from repository -->
 	</parent>
 	<groupId>org.aalku.joatse.target</groupId>
 	<artifactId>joatse-target</artifactId>
-	<version>0.0.14-SNAPSHOT</version>
+	<version>0.0.19-SNAPSHOT</version>
 	<name>joatse-target</name>
 	<description>Tunnel Target</description>
 	<properties>
@@ -41,7 +41,7 @@
 		<dependency>
 			<groupId>org.json</groupId>
 			<artifactId>json</artifactId>
-			<version>20220924</version>
+			<version>20230618</version>
 		</dependency>
 		<dependency>
 			<groupId>com.github.kenglxn.qrgen</groupId>

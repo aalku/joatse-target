@@ -8,6 +8,9 @@ import java.net.URL;
 import java.util.Collection;
 import java.util.Optional;
 import java.util.Random;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
@@ -22,6 +25,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.util.concurrent.ListenableFutureCallback;
 import org.springframework.web.socket.BinaryMessage;
+import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.PingMessage;
+import org.springframework.web.socket.PongMessage;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketHandler;
 import org.springframework.web.socket.WebSocketHttpHeaders;
@@ -31,6 +37,8 @@ import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 
 public class JoatseClient implements WebSocketHandler {
 
+	private static final int TIME_BETWEEN_PING_MS = 5000;
+	private static final int TIMEOUT_PONG_MS = 60000;
 	private static final int MESSAGE_SIZE_LIMIT = 1024*64;
 
 	private enum ClientState { BOOT, WS_CONNECTED, WAITING_RESPONSE, WAITING_CONFIRM, TUNNEL_CONNECTED, FINISHED };
@@ -46,6 +54,8 @@ public class JoatseClient implements WebSocketHandler {
 	private AtomicReference<ClientState> state = new AtomicReference<>(ClientState.BOOT);
 	
     private JoatseSession jSession = null;
+    		
+    private AtomicLong lastMsgReceivedNanotime = new AtomicLong(System.nanoTime());
     
 	public JoatseClient(String cloudUrl, QrMode qrMode) {
 		this.cloudUrl = cloudUrl;
@@ -58,6 +68,24 @@ public class JoatseClient implements WebSocketHandler {
 		client.doHandshake(this, headers, new URI(cloudUrl)).addCallback(new ListenableFutureCallback<WebSocketSession>() {
 			@Override
 			public void onSuccess(WebSocketSession session) {
+				Thread t = new Thread("ws_heartbeat_" + session.getId()) {
+					public void run() {
+						try {
+							while (session.isOpen()) {
+								session.sendMessage(new PingMessage());
+								Thread.sleep(TIME_BETWEEN_PING_MS);
+								long msWithoutMessages = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - JoatseClient.this.lastMsgReceivedNanotime.get());
+								if (msWithoutMessages > TIMEOUT_PONG_MS) {
+									throw new IOException("Pong timeout");
+								}
+							}
+						} catch (Exception e) {
+							log.warn("Exception on heartbeat sender thread. Closing session.", e);
+							IOTools.runFailable(()->session.close(CloseStatus.SESSION_NOT_RELIABLE));
+						}
+					}
+				};
+				t.start();
 				// We will use the other handler
 			}
 			@Override
@@ -67,6 +95,10 @@ public class JoatseClient implements WebSocketHandler {
 			}
 		});
 		return this;
+	}
+	
+	public boolean isConnected() {
+		return state.get() == ClientState.WS_CONNECTED;
 	}
 	
 	JoatseClient waitUntilConnected() {
@@ -123,10 +155,15 @@ public class JoatseClient implements WebSocketHandler {
 
 	@Override
 	public void handleMessage(WebSocketSession session, WebSocketMessage<?> message) throws Exception {
+		lastMsgReceivedNanotime.set(System.nanoTime());
 		if (message instanceof TextMessage) {
 			handleTextMessage(session, (TextMessage) message);
 		} else if (message instanceof BinaryMessage) {
 			handleBinaryMessage(session, (BinaryMessage) message);
+		} else if (message instanceof PingMessage) {
+			log.info("Ping");
+		} else if (message instanceof PongMessage) {
+//			log.info("Pong");
 		}
 	}
 	
@@ -138,7 +175,7 @@ public class JoatseClient implements WebSocketHandler {
 				String response = js.getString("response");
 				if (response.equals("RUNNING")) {
 					if (state.get() != ClientState.WAITING_CONFIRM) {
-						throw new IllegalStateException("Invalid response " + response + " when state != WAITING_CONFIRM");
+						throw new IllegalStateException("Invalid response " + response + " when state != WAITING_CONFIRM (it is " + state.get() + ")");
 					}
 					System.out.println("Tunnel registered succesfuly.");
 					if (js.has("tcpTunnels")) {
@@ -148,11 +185,8 @@ public class JoatseClient implements WebSocketHandler {
 							try {
 								for (int i = 0; i < tcpTunnels.length(); i++) {
 									JSONObject p = tcpTunnels.getJSONObject(i);
-									JSONObject listenPortObject = p.getJSONObject("listenPort");
-									for (String clientAddress: listenPortObject.keySet()) {
-										int listenPort = listenPortObject.getInt(clientAddress);
-										System.out.println(String.format("  %s:%s --> %s:%s from client %s", p.getString("listenHost"), listenPort, p.getString("targetHostname"), p.getInt("targetPort"), clientAddress));
-									}
+									int listenPort = p.getInt("listenPort");
+									System.out.println(String.format("  %s:%s --> %s:%s", p.getString("listenHost"), listenPort, p.getString("targetHostname"), p.getInt("targetPort")));
 								}
 							} catch (Exception e) {
 								System.err.println("Error printing tcp tunnels");
@@ -168,11 +202,8 @@ public class JoatseClient implements WebSocketHandler {
 							try {
 								for (int i = 0; i < httpTunnels.length(); i++) {
 									JSONObject p = httpTunnels.getJSONObject(i);
-									JSONObject listenUrlObject = p.getJSONObject("listenUrl");
-									for (String clientAddress: listenUrlObject.keySet()) {
-										String listenUrl = listenUrlObject.getString(clientAddress);
-										System.out.println(String.format("  %s --> %s from client %s", listenUrl, p.getString("targetUrl"), clientAddress));
-									}
+									String listenUrl = p.getString("listenUrl");
+									System.out.println(String.format("  %s --> %s", listenUrl, p.getString("targetUrl")));
 								}
 							} catch (Exception e) {
 								System.err.println("Error printing http tunnels");
@@ -324,17 +355,35 @@ public class JoatseClient implements WebSocketHandler {
 
 	
 	/**
+	 * @param preconfirmUuid 
 	 * @param tcpTunnels: Requested TCP tunnel connections
 	 * @param httpTunnels: Requested HTTP tunnel connections
 	 * @param socks5Tunnel: Requested Socks5 tunnel connection 
 	 */
 	public void createTunnel(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels,
-			Optional<TunnelRequestItemSocks5> socks5Tunnel) {
+			Optional<TunnelRequestItemSocks5> socks5Tunnel, Optional<UUID> preconfirmUuid) {
 		if (state.get() != ClientState.WS_CONNECTED) {
 			throw new IllegalStateException("Invalid call to createTunnel when state != WS_CONNECTED");
 		}
-		jSession.createTunnel(tcpTunnels, httpTunnels, socks5Tunnel);
-		setState(ClientState.WAITING_RESPONSE);
+		jSession.createTunnel(tcpTunnels, httpTunnels, socks5Tunnel, preconfirmUuid);
+		if (!preconfirmUuid.isPresent()) {
+			setState(ClientState.WAITING_RESPONSE);
+		} else {
+			setState(ClientState.WAITING_CONFIRM);
+		}
+	}
+
+	/**
+	 * The session is supossed to be shutdown but let's make sure of it.
+	 */
+	public void ensureShutdown() {
+		ClientState state = this.state.get();
+		if (state != ClientState.FINISHED) {
+			log.warn("Client is supossed to be finished: " + state);
+		}
+		if (jSession != null) {
+			IOTools.runFailable(()->jSession.close(new RuntimeException("ensureShutdown")));
+		}
 	}
 
 }
