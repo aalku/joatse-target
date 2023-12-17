@@ -195,7 +195,8 @@ public class JoatseSession {
 	}
 
 	public void createTunnel(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels,
-			Optional<TunnelRequestItemSocks5> socks5Tunnel, Optional<UUID> preconfirmUuid) {
+			Optional<TunnelRequestItemSocks5> socks5Tunnel, Optional<UUID> preconfirmUuid,
+			boolean autoAuthorizeByHttpUrl) {
 		// TODO udp ports
 		JSONObject js = new JSONObject();
 		js.put("request", "CONNECTION");
@@ -236,6 +237,7 @@ public class JoatseSession {
 		preconfirmUuid.ifPresent(uuid->{
 			js.put("preconfirmed", uuid.toString());
 		});
+		js.put("autoAuthorizeByHttpUrl", autoAuthorizeByHttpUrl);
 		TextMessage message = new TextMessage(js.toString());
 		log.info("sending request: {}", message.getPayload());
 		sendMessage(message);

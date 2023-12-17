@@ -96,14 +96,17 @@ public class JoatseTargetApplication implements ApplicationRunner {
 		} catch (IllegalArgumentException e) {
 			throw new CommandLineException("Invalid preconfirmed value: " + preconfirmed.stream().findFirst().get());
 		}
-
-		run(tcpTunnels, httpTunnels, socks5Tunnel, preconfirmUuid);
+		boolean autoAuthorizeByHttpUrl = Optional.ofNullable(args.getOptionValues("autoAuthorizeByHttpUrl"))
+				.map(x -> x.isEmpty() || Boolean.parseBoolean(x.get(0))).orElse(false);
+		
+		run(tcpTunnels, httpTunnels, socks5Tunnel, preconfirmUuid, autoAuthorizeByHttpUrl);
 	}
 
 	private void run(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels,
-			Optional<TunnelRequestItemSocks5> socks5Tunnel, Optional<UUID> preconfirmUuid) throws URISyntaxException {
+			Optional<TunnelRequestItemSocks5> socks5Tunnel, Optional<UUID> preconfirmUuid,
+			boolean autoAuthorizeByHttpUrl) throws URISyntaxException {
 		while (true) {
-			runAndWaitToFinish(tcpTunnels, httpTunnels, socks5Tunnel, preconfirmUuid);
+			runAndWaitToFinish(tcpTunnels, httpTunnels, socks5Tunnel, preconfirmUuid, autoAuthorizeByHttpUrl);
 			if (!daemonMode) {
 				break;
 			} else {
@@ -118,7 +121,7 @@ public class JoatseTargetApplication implements ApplicationRunner {
 
 	private void runAndWaitToFinish(Collection<TunnelRequestItemTcp> tcpTunnels,
 			Collection<TunnelRequestItemHttp> httpTunnels, Optional<TunnelRequestItemSocks5> socks5Tunnel,
-			Optional<UUID> preconfirmUuid) throws URISyntaxException {
+			Optional<UUID> preconfirmUuid, boolean autoAuthorizeByHttpUrl) throws URISyntaxException {
 		Integer maxTries = Optional.ofNullable(getRetryCount()).map(n -> n + 1).orElse(null);
 		int tryNumber = 0;
 		while (true) {
@@ -129,7 +132,7 @@ public class JoatseTargetApplication implements ApplicationRunner {
 			try {
 				jc.connect().waitUntilConnected();		
 				if (jc.isConnected()) {	
-					jc.createTunnel(tcpTunnels, httpTunnels, socks5Tunnel, preconfirmUuid);
+					jc.createTunnel(tcpTunnels, httpTunnels, socks5Tunnel, preconfirmUuid, autoAuthorizeByHttpUrl);
 					jc.waitUntilFinished();
 					break;
 				} else {

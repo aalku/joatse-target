@@ -361,11 +361,11 @@ public class JoatseClient implements WebSocketHandler {
 	 * @param socks5Tunnel: Requested Socks5 tunnel connection 
 	 */
 	public void createTunnel(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels,
-			Optional<TunnelRequestItemSocks5> socks5Tunnel, Optional<UUID> preconfirmUuid) {
+			Optional<TunnelRequestItemSocks5> socks5Tunnel, Optional<UUID> preconfirmUuid, boolean autoAuthorizeByHttpUrl) {
 		if (state.get() != ClientState.WS_CONNECTED) {
 			throw new IllegalStateException("Invalid call to createTunnel when state != WS_CONNECTED");
 		}
-		jSession.createTunnel(tcpTunnels, httpTunnels, socks5Tunnel, preconfirmUuid);
+		jSession.createTunnel(tcpTunnels, httpTunnels, socks5Tunnel, preconfirmUuid, autoAuthorizeByHttpUrl);
 		if (!preconfirmUuid.isPresent()) {
 			setState(ClientState.WAITING_RESPONSE);
 		} else {
