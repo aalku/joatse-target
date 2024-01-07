@@ -44,7 +44,7 @@ public class BasicTunnelTcpConnection extends AbstractTunnelTcpConnection {
 		}).thenCompose((Function<AsynchronousSocketChannel, CompletableFuture<AsynchronousSocketChannel>>)(tcp)->{
 			tcpRef.set(tcp);
 			CompletableFuture<AsynchronousSocketChannel> res = new CompletableFuture<AsynchronousSocketChannel>();
-			notifyConnected(socketId).handle((x, e)->{
+			notifyConnected().handle((x, e)->{
 				if (e != null) {
 					res.completeExceptionally(e);
 				} else {
@@ -55,18 +55,18 @@ public class BasicTunnelTcpConnection extends AbstractTunnelTcpConnection {
 			});
 			return res;
 		}).thenCompose((Function<AsynchronousSocketChannel, CompletableFuture<Void>>)tcp->{
-			super.runSocket();
+			super.copyFromTargetToCloudForever();
 			return CompletableFuture.completedFuture(null);
 		}).exceptionally(e->{
 			if (newTcpSocketMessageSent.get()) {
-				log.warn("Aborting tcp tunnel {} just after creation: " + e, socketId);
+				log.warn("Aborting tcp tunnel {} just after creation: " + e, getSocketId());
 				this.close(e, true);
 				return null;
 			} else {
-				log.warn("Aborting tcp tunnel {} during creation: " + e, socketId);
+				log.warn("Aborting tcp tunnel {} during creation: " + e, getSocketId());
 				// Do not call this.close() as that's for stablished connections
 				IOTools.runFailable(()->this.tcpRef.get().close());
-				notifyCantConnect(socketId).handle((x,e2)->{
+				notifyCantConnect().handle((x,e2)->{
 					close(e, null);
 					return null;
 				});
@@ -76,12 +76,12 @@ public class BasicTunnelTcpConnection extends AbstractTunnelTcpConnection {
 	}
 	
 	@Override
-	protected void receivedWsBytes(ByteBuffer buffer) throws IOException {
+	protected void receivedBytesFromCloud(ByteBuffer buffer) throws IOException {
 		try {
 			tcpWrite(buffer).get(); // This is blocking to ensure write order. TODO prepare an async version
 		} catch (InterruptedException | ExecutionException e) {
 			throw new IOException("Error writting to tcp: " + e, e);
 		}
 	}
-
+	
 }

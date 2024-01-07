@@ -18,16 +18,20 @@ public class Socks5TunnelTcpConnection extends AbstractTunnelTcpConnection {
 	
 	public Socks5TunnelTcpConnection(JoatseSession session, long socketId, Consumer<Throwable> closeSession, TunnelRequestItemSocks5 req) {
 		super(session, socketId, closeSession);
-		this.proxy = new Socks5Proxy(req.getAuthorizedTargets(), s->closeSocket(s), bb->super.sendSocketDataToWs(bb));
-		super.notifyConnected(socketId);
+		this.proxy = new Socks5Proxy(req.getAuthorizedTargets(), s->closeSocket(s), bb->{try {
+			super.sendDataMessageToCloud(bb).get();
+		} catch (Exception e) {
+			throw new RuntimeException(e);
+		}});
+		super.notifyConnected();
 		this.proxy.getResult().thenAccept(s->{
 			super.tcpRef.set(s);
-			super.runSocket();
+			super.copyFromTargetToCloudForever();
 		});
 	}
 
 	private void closeSocket(String msg) {
-		log.warn("Socket closed " + socketId + " because: " + msg);
+		log.warn("Socket closed " + getSocketId() + " because: " + msg);
 		super.close(null, null); // TODO reason or something
 	}
 
@@ -37,7 +41,7 @@ public class Socks5TunnelTcpConnection extends AbstractTunnelTcpConnection {
 	}
 
 	@Override
-	protected void receivedWsBytes(ByteBuffer buffer) throws IOException {
+	protected void receivedBytesFromCloud(ByteBuffer buffer) throws IOException {
 		synchronized (this) {
 			if (super.tcpRef.get() == null) {
 				this.proxy.receivedWsBytes(buffer);
@@ -52,9 +56,9 @@ public class Socks5TunnelTcpConnection extends AbstractTunnelTcpConnection {
 	}
 	
 	@Override
-	public void close() {
+	protected void destroy() {
 		this.proxy.close(this.getClass().getSimpleName() + " closed");
-		super.close();
+		super.destroy();
 	}
 
 }

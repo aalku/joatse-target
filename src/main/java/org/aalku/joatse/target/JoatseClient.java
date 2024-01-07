@@ -213,6 +213,7 @@ public class JoatseClient implements WebSocketHandler {
 						}
 					}
 					setState(ClientState.TUNNEL_CONNECTED);
+					jSession.handleConnected();
     				return;
 				} else if (response.equals("CONFIRM")){
 					if (state.get() != ClientState.WAITING_RESPONSE) {
@@ -327,45 +328,76 @@ public class JoatseClient implements WebSocketHandler {
 		 */
 		public final URL targetUrl;
 		public final boolean unsafe;
+		public final boolean hideProxy;
 
-		public TunnelRequestItemHttp(URL url, String targetDescription, boolean unsafe) {
+		public TunnelRequestItemHttp(URL url, String targetDescription, boolean unsafe, boolean hideProxy) {
 			super(url.getHost(), Optional.of(url.getPort()).filter(p -> p > 0)
 					.orElseGet(() -> url.getDefaultPort()), targetDescription);
 			this.targetUrl = url;
 			this.unsafe = unsafe;
+			this.hideProxy = hideProxy;
 		}
 	}
 	
 	public static class TunnelRequestItemSocks5 {
-		public long targetId = new Random().nextLong() & Long.MAX_VALUE;
-		private Collection<String> authorizedTargets;
+		public final long targetId = new Random().nextLong() & Long.MAX_VALUE;
+		private final Collection<String> authorizedTargets;
 
 		public TunnelRequestItemSocks5(Collection<String> authorizedTargets) {
-			this.setAuthorizedTargets(authorizedTargets);
+			this.authorizedTargets = authorizedTargets;
 		}
 
 		public Collection<String> getAuthorizedTargets() {
 			return authorizedTargets;
 		}
-
-		public void setAuthorizedTargets(Collection<String> authorizedTargets) {
-			this.authorizedTargets = authorizedTargets;
-		}
 	}
 
+	public static class TunnelRequestItemCommand {
+		public final long targetId = new Random().nextLong() & Long.MAX_VALUE;
+		private final String[] command;
+		private final String targetDescription;
+		private final String targetUser;
+		private final String targetHostname;
+		private final int targetPort;
+
+		public TunnelRequestItemCommand(String[] command, String targetUser, String targetHost, int targetPort, String targetDescription) {
+			this.command = command;
+			this.targetUser = targetUser;
+			this.targetHostname = targetHost;
+			this.targetPort = targetPort;
+			this.targetDescription = targetDescription;
+		}
+		public String[] getCommand() {
+			return command;
+		}
+		public String getTargetDescription() {
+			return targetDescription;
+		}
+		public String getTargetUser() {
+			return targetUser;
+		}
+		public String getTargetHostname() {
+			return targetHostname;
+		}
+		public int getTargetPort() {
+			return targetPort;
+		}
+	}
 	
 	/**
+	 * @param commandTunnels 
 	 * @param preconfirmUuid 
 	 * @param tcpTunnels: Requested TCP tunnel connections
 	 * @param httpTunnels: Requested HTTP tunnel connections
 	 * @param socks5Tunnel: Requested Socks5 tunnel connection 
 	 */
 	public void createTunnel(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels,
-			Optional<TunnelRequestItemSocks5> socks5Tunnel, Optional<UUID> preconfirmUuid, boolean autoAuthorizeByHttpUrl) {
+			Optional<TunnelRequestItemSocks5> socks5Tunnel, Collection<TunnelRequestItemCommand> commandTunnels,
+			Optional<UUID> preconfirmUuid, boolean autoAuthorizeByHttpUrl) {
 		if (state.get() != ClientState.WS_CONNECTED) {
 			throw new IllegalStateException("Invalid call to createTunnel when state != WS_CONNECTED");
 		}
-		jSession.createTunnel(tcpTunnels, httpTunnels, socks5Tunnel, preconfirmUuid, autoAuthorizeByHttpUrl);
+		jSession.createTunnel(tcpTunnels, httpTunnels, socks5Tunnel, commandTunnels, preconfirmUuid, autoAuthorizeByHttpUrl);
 		if (!preconfirmUuid.isPresent()) {
 			setState(ClientState.WAITING_RESPONSE);
 		} else {
@@ -383,6 +415,12 @@ public class JoatseClient implements WebSocketHandler {
 		}
 		if (jSession != null) {
 			IOTools.runFailable(()->jSession.close(new RuntimeException("ensureShutdown")));
+		}
+	}
+
+	public void shutdown() {
+		if (jSession != null) {
+			jSession.close(new InterruptedException("Shutting down app"));
 		}
 	}
 

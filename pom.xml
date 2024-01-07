@@ -10,12 +10,13 @@
 	</parent>
 	<groupId>org.aalku.joatse.target</groupId>
 	<artifactId>joatse-target</artifactId>
-	<version>0.0.21-SNAPSHOT</version>
+	<version>0.0.24-SNAPSHOT</version>
 	<name>joatse-target</name>
 	<description>Tunnel Target</description>
 	<properties>
 		<java.version>8</java.version>
 	</properties>
+	
 	<dependencies>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -34,6 +35,12 @@
 					<artifactId>spring-webmvc</artifactId>
 				</exclusion>
 			</exclusions>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-devtools</artifactId>
+			<scope>runtime</scope>
+			<optional>true</optional>
 		</dependency>
 
 		<!-- In exchange for excluded deps -->
@@ -80,6 +87,15 @@
 				</exclusion>
 			</exclusions>
 		</dependency>
+		<dependency>
+			<groupId>org.jetbrains.pty4j</groupId>
+			<artifactId>pty4j</artifactId>
+			<version>0.12.10-jdk8</version>
+		</dependency>
+	    <dependency>
+	        <groupId>com.github.ben-manes.caffeine</groupId>
+	        <artifactId>caffeine</artifactId>
+	    </dependency>
 	</dependencies>
 
 	<build>
@@ -87,13 +103,13 @@
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
-				<dependencies>
-					<dependency>
-						<groupId>org.springframework.boot.experimental</groupId>
-						<artifactId>spring-boot-thin-layout</artifactId>
-						<version>1.0.31.RELEASE</version>
-					</dependency>
-				</dependencies>
+<!--				<dependencies>-->
+<!--					<dependency>-->
+<!--						<groupId>org.springframework.boot.experimental</groupId>-->
+<!--						<artifactId>spring-boot-thin-layout</artifactId>-->
+<!--						<version>1.0.31.RELEASE</version>-->
+<!--					</dependency>-->
+<!--				</dependencies>-->
 			</plugin>
 			<plugin>
 			    <groupId>org.apache.maven.plugins</groupId>
@@ -129,6 +145,11 @@
             <id>jitpack.io</id>
             <url>https://jitpack.io</url>
         </repository>
+		<repository>
+			<id>jetbrains-intellij-dependencies</id>
+			<url>
+				https://packages.jetbrains.team/maven/p/ij/intellij-dependencies/</url>
+		</repository>
 	</repositories>
 	<pluginRepositories>
 		<pluginRepository>

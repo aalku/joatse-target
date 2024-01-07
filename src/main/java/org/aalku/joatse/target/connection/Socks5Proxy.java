@@ -115,11 +115,13 @@ public class Socks5Proxy {
 				response.put((byte) 5); // Version
 				if (!methods.contains(0)) {
 					response.put((byte) 0xFF); // Refused
+					response.flip();
 					senderToWs.accept(response);
 					close("Unauthenticated method not supported by client");
 					return;
 				}
 				response.put((byte) 0); // Unauthenticated
+				response.flip();
 				answerAndUpdateState(response, 2 + mCount, State.IDLE);
 				return;
 			} else if (state == State.IDLE) {

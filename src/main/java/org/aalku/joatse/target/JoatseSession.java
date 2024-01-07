@@ -3,10 +3,14 @@ package org.aalku.joatse.target;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -14,12 +18,17 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 
+import org.aalku.joatse.target.JoatseClient.TunnelRequestItemCommand;
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemHttp;
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemSocks5;
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemTcp;
-import org.aalku.joatse.target.connection.AbstractTunnelTcpConnection;
 import org.aalku.joatse.target.connection.BasicTunnelTcpConnection;
+import org.aalku.joatse.target.connection.CommandConnection;
 import org.aalku.joatse.target.connection.Socks5TunnelTcpConnection;
+import org.aalku.joatse.target.connection.TunnelConnection;
+import org.aalku.joatse.target.tools.cipher.JoatseCipher;
+import org.aalku.joatse.target.tools.cipher.JoatseCipher.KeyExchange;
+import org.aalku.joatse.target.tools.cipher.JoatseCipher.Paired;
 import org.aalku.joatse.target.tools.io.IOTools;
 import org.aalku.joatse.target.tools.io.WebSocketSendWorker;
 import org.json.JSONArray;
@@ -47,17 +56,22 @@ public class JoatseSession {
 	 */
 	private Map<Long, TunnelRequestItemTcp> tcpConnectionRequestTargets = new LinkedHashMap<>();
 	
-	/** Requested socks5 connecrtion */
+	/** Requested socks5 connections */
 	private AtomicReference<TunnelRequestItemSocks5> tunnelRequestItemSocks5 = new AtomicReference<JoatseClient.TunnelRequestItemSocks5>(null);
 	
-	/**
-	 * Stablished TCP tunnel connections
-	 */
-	private Map<Long, AbstractTunnelTcpConnection> tcpConnectionMap = new LinkedHashMap<>();
+	/** Requested command connections */
+	private Map<Long, TunnelRequestItemCommand> tunnelRequestItemCommand = new LinkedHashMap<>();
 	
+	/**
+	 * Stablished tunnel connections
+	 */
+	private Map<Long, TunnelConnection> connectionMap = new LinkedHashMap<>();
+
 	private WebSocketSendWorker wsSendWorker;
 
 	private WebSocketSession session;
+
+	private KeyExchange end2endCipher;
 
 	
 	public JoatseSession(WebSocketSession session) {
@@ -65,15 +79,25 @@ public class JoatseSession {
 		this.wsSendWorker = new WebSocketSendWorker(this.session);
 	}
 	
-	void add(AbstractTunnelTcpConnection c) {
+	void add(TunnelConnection c) {
 		lock.lock();
 		try {
-			tcpConnectionMap.put(c.getSocketId(), c);
+			connectionMap.put(c.getSocketId(), (TunnelConnection) c);
 		} finally {
 			lock.unlock();
 		}
 	}
-
+	
+	public void remove(TunnelConnection c) {
+		lock.lock();
+		try {
+			connectionMap.remove(c.getSocketId(), c);
+			c.assertClosed();
+		} finally {
+			lock.unlock();
+		}
+	}
+		
 	public void handleBinaryMessage(BinaryMessage message) throws IOException {
 		ByteBuffer buffer = message.getPayload();
 		int version = buffer.get();
@@ -81,62 +105,49 @@ public class JoatseSession {
 			throw new IOException("Unsupported BinaryMessage protocol version: " + version);
 		}
 		byte type = buffer.get();
-		if (type == AbstractTunnelTcpConnection.MESSAGE_TYPE_NEW_SOCKET) {
+		if (type == TunnelConnection.MESSAGE_PUBLIC_KEY) {
+			sendPublicKeyToCloud();
+		} else if (type == TunnelConnection.MESSAGE_TYPE_NEW_SOCKET) {
 			long socketId = buffer.getLong();
 			long targetId = buffer.getLong();
 			TunnelRequestItemTcp target = tcpConnectionRequestTargets.get(targetId);
 			if (target != null) {
-				InetSocketAddress targetAddress = new InetSocketAddress(InetAddress.getByName(target.targetHostname), target.targetPort);
-				BasicTunnelTcpConnection c = new BasicTunnelTcpConnection(this, targetAddress, socketId, (e)->this.close(e));
-				add(c);
-				c.getCloseStatus().thenAccept(remote->{
-					// Connection closed ok
-					if (remote == null) {
-						log.info("TCP tunnel closed");
-					} else if (remote) {
-						log.info("TCP tunnel closed by target side");
-					} else {
-						log.info("TCP tunnel closed by this side");
-					}
-				}).exceptionally(e->{
-					log.error("TCP tunnel closed because of error: {}", e, e);
-					return null;
-				});
-			} else {
-				Optional<TunnelRequestItemSocks5> socks5 = Optional.ofNullable(tunnelRequestItemSocks5.get()).filter(x->x.targetId == targetId);
-				if (socks5.isPresent()) {
-					// Socks5
-					Socks5TunnelTcpConnection c = new Socks5TunnelTcpConnection(this, socketId, (e)->this.close(e), socks5.get());
-					add(c);
-					c.getCloseStatus().thenAccept(remote->{
-						// Connection closed ok
-						if (remote == null) {
-							log.info("Socks5 TCP tunnel closed");
-						} else if (remote) {
-							log.info("Socks5 TCP tunnel closed by target side");
-						} else {
-							log.info("Socks5 TCP tunnel closed by this side");
-						}
-					}).exceptionally(e->{
-						log.error("TCP tunnel closed because of error: {}", e, e);
-						return null;
-					});
-				} else {
-					log.warn("Received new socket for unknown target id: " + targetId);
+				newConnectionTcp(socketId, target);
+				return;
+			} 
+			TunnelRequestItemSocks5 socks5 = Optional.ofNullable(tunnelRequestItemSocks5.get()).filter(x->x.targetId == targetId).orElse(null);
+			if (socks5 != null) {
+				newConnectionSocks5(socketId, socks5);
+				return;
+			} 
+			TunnelRequestItemCommand command = tunnelRequestItemCommand.get(targetId);
+			if (command != null) {
+				byte[] cipheredSessionKey = new byte[buffer.remaining()];
+				buffer.get(cipheredSessionKey);
+				Paired sessionCipher;
+				try {
+					sessionCipher = end2endCipher.pair(cipheredSessionKey);
+				} catch (Exception e) {
+					throw new IOException("Error pairing e2e cipher", e);
 				}
-			}
-		} else if (AbstractTunnelTcpConnection.messageTypesHandled.contains(type)) {
+				newConnectionCommand(socketId, command, sessionCipher);
+				return;
+			} 
+			log.warn("Received new socket for unknown target id: " + targetId);
+			return;
+		} else if (TunnelConnection.supportedMessages.contains(type)) {
 			long socketId = buffer.getLong();
 			Runnable runWithoutLock = null; 
-			AbstractTunnelTcpConnection c = null;
+			TunnelConnection c = null;
 			lock.lock();
 			try {
-				c = tcpConnectionMap.get(socketId);
-				if (c == null) {
-					log.warn("AbstractTunnelTcpConnection is not open: " + socketId);
-					return; // Abort withouut closing the session
+				c = connectionMap.get(socketId);
+				if (c != null) {
+					runWithoutLock = c.receivedTunnelMessage(buffer, type); // blocking with lock is ok
+				} else {
+					log.warn("TunnelConnection is not open: " + socketId);
+					return; // Abort without closing the session
 				}
-				runWithoutLock = c.receivedMessage(buffer, type); // blocking with lock is ok
 			} catch (Exception e) {
 				if (c != null) {
 					log.warn("Error handling tcp data: " + e, e);
@@ -152,7 +163,108 @@ public class JoatseSession {
 			}
 		}
 	}
+
+	private static byte[] asAesIv(long a, long b) {
+		byte[] res = new byte[16];
+		for (int i = 0; i < 8; i++) {
+			res[i] = (byte) (a & 0xFF);
+			a = a / 256;
+		}
+		for (int i = 0; i < 8; i++) {
+			res[8 + i] = (byte) (b & 0xFF);
+			b = b / 256;
+		}
+		return res;
+	}
+
+	private void sendPublicKeyToCloud() {
+		byte[] pk = this.end2endCipher.getPublicKey();
+		ByteBuffer bytes = ByteBuffer.allocate(pk.length + 2);
+		bytes.put(PROTOCOL_VERSION);
+		bytes.put(TunnelConnection.MESSAGE_PUBLIC_KEY);
+		bytes.put(pk);
+		bytes.flip();
+		sendMessage(new BinaryMessage(bytes));
+	}
+
+	private void newConnectionSocks5(long socketId, TunnelRequestItemSocks5 socks5) {
+		Socks5TunnelTcpConnection c = new Socks5TunnelTcpConnection(this, socketId, (e)->this.close(e), socks5);
+		add(c);
+		c.getCloseStatus().thenAccept(remote->{
+			// Connection closed ok
+			if (remote == null) {
+				log.info("Socks5 TCP tunnel closed");
+			} else if (remote) {
+				log.info("Socks5 TCP tunnel closed by target side");
+			} else {
+				log.info("Socks5 TCP tunnel closed by this side");
+			}
+		}).exceptionally(e->{
+			log.error("TCP tunnel closed because of error: {}", e, e);
+			return null;
+		});
+	}
+
+	private void newConnectionTcp(long socketId, TunnelRequestItemTcp target) throws UnknownHostException {
+		InetSocketAddress targetAddress = new InetSocketAddress(InetAddress.getByName(target.targetHostname), target.targetPort);
+		BasicTunnelTcpConnection c = new BasicTunnelTcpConnection(this, targetAddress, socketId, (e)->this.close(e));
+		add(c);
+		c.getCloseStatus().thenAccept(remote->{
+			// Connection closed ok
+			if (remote == null) {
+				log.info("TCP tunnel closed");
+			} else if (remote) {
+				log.info("TCP tunnel closed by target side");
+			} else {
+				log.info("TCP tunnel closed by this side");
+			}
+		}).exceptionally(e->{
+			log.error("TCP tunnel closed because of error: {}", e, e);
+			return null;
+		});
+	}
 	
+	private void newConnectionCommand(long socketId, TunnelRequestItemCommand target, Paired sessionCipher) {
+		CommandConnection c = new CommandConnection(this, transformCommand(target.getCommand(), target.getTargetHostname(), target.getTargetPort(), target.getTargetUser()), socketId, (e)->this.close(e), sessionCipher);
+		if (c.startCommand()) {
+			add(c);
+			c.getCloseStatus().thenAccept(remote->{
+				// Connection closed ok
+				if (remote == null) {
+					log.info("Command tunnel closed");
+				} else if (remote) {
+					log.info("Command tunnel closed by target side");
+				} else {
+					log.info("Command tunnel closed by this side");
+				}
+			}).exceptionally(e->{
+				log.error("Command tunnel closed because of error: {}", e, e);
+				return null;
+			});
+		}
+	}
+
+	private String[] transformCommand(String[] command, String host, int port, String user) {
+		// TODO Make it better
+		
+		List<String> inputCommand = Arrays.asList(command);
+		List<String> outputCommand = new ArrayList<>();
+		
+		boolean isShell = inputCommand.size() == 0 // 
+				|| (inputCommand.size() == 1 && inputCommand.get(0).trim().isEmpty()) // 
+				|| (inputCommand.size() == 1 && inputCommand.get(0).trim().toLowerCase().equals("shell"));
+		
+		String nullfile = System.getProperty("os.name").toLowerCase().contains("win") ? "NUL" : "/dev/null";			
+		List<String> sshCommand = Arrays.asList("ssh", "-t", "-q", "-e", "none", "-o", "PubkeyAuthentication=no", "-o", "PreferredAuthentications=password", "-o", "GSSAPIAuthentication=no", "-o", "UserKnownHostsFile=" + nullfile, "-o", "StrictHostKeyChecking=no", "-F", nullfile, "-l", user, "-p", String.valueOf(port), host.split("[ ;']+", 2)[0]);
+		
+		outputCommand.addAll(sshCommand);
+		if (!isShell) {
+			outputCommand.add("SHELL=/dev/null");
+			outputCommand.addAll(inputCommand);
+		}
+		return outputCommand.toArray(new String[outputCommand.size()]);
+	}
+
 	public void close() {
 		close(null);
 	}
@@ -164,8 +276,8 @@ public class JoatseSession {
 			 * We need a copy since c.close() will update the map and we cannot iterate the
 			 * map at the same time.
 			 */
-			ArrayList<AbstractTunnelTcpConnection> copy = new ArrayList<AbstractTunnelTcpConnection>(tcpConnectionMap.values());
-			for (AbstractTunnelTcpConnection c: copy) {
+			ArrayList<TunnelConnection> copy = new ArrayList<>(connectionMap.values());
+			for (TunnelConnection c: copy) {
 				lock.unlock(); // Unlock while closing it so we don't share the lock with anyone else
 				try {
 					c.close(e, false);
@@ -180,23 +292,21 @@ public class JoatseSession {
 		}
 	}
 
-	public void remove(AbstractTunnelTcpConnection c) {
-		lock.lock();
-		try {
-			tcpConnectionMap.remove(c.getSocketId(), c);
-			c.assertClosed();
-		} finally {
-			lock.unlock();
-		}
-	}
-
 	public CompletableFuture<Void> sendMessage(WebSocketMessage<?> message) {
 		return wsSendWorker.sendMessage(message);
 	}
 
 	public void createTunnel(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels,
-			Optional<TunnelRequestItemSocks5> socks5Tunnel, Optional<UUID> preconfirmUuid,
-			boolean autoAuthorizeByHttpUrl) {
+			Optional<TunnelRequestItemSocks5> socks5Tunnel, Collection<TunnelRequestItemCommand> commandTunnels,
+			Optional<UUID> preconfirmUuid, boolean autoAuthorizeByHttpUrl) {
+		if (!commandTunnels.isEmpty()) {
+			// Prepare e2e cypher
+			try {
+				this.end2endCipher = JoatseCipher.forRSAKeyExchange();
+			} catch (NoSuchAlgorithmException e) {
+				throw new RuntimeException("Can't activate E2E cipher: " + e, e);
+			}
+		}
 		// TODO udp ports
 		JSONObject js = new JSONObject();
 		js.put("request", "CONNECTION");
@@ -222,6 +332,7 @@ public class JoatseSession {
 				o.put("targetDescription", i.targetDescription);
 				o.put("targetUrl", i.targetUrl.toString());
 				o.put("unsafe", Boolean.toString(i.unsafe));
+				o.put("hideProxy", Boolean.toString(i.hideProxy));
 				httpJs.put(o);
 			}
 			js.put("httpTunnels", httpJs);
@@ -234,6 +345,21 @@ public class JoatseSession {
 			s5J.put(o);
 			js.put("socks5Tunnel", s5J);
 		});
+		if (!commandTunnels.isEmpty()) {
+			JSONArray commandJs = new JSONArray();
+			for (TunnelRequestItemCommand i: commandTunnels) {
+				tunnelRequestItemCommand.put(i.targetId, i);
+				JSONObject o = new JSONObject();
+				o.put("targetId", i.targetId);
+				o.put("targetDescription", i.getTargetDescription());
+				o.put("targetHostname", i.getTargetHostname());
+				o.put("targetPort", i.getTargetPort());
+				o.put("targetUser", i.getTargetUser());
+				o.put("command", new JSONArray(Arrays.asList(i.getCommand())));
+				commandJs.put(o);
+			}
+			js.put("commandTunnels", commandJs);
+		}
 		preconfirmUuid.ifPresent(uuid->{
 			js.put("preconfirmed", uuid.toString());
 		});
@@ -241,6 +367,22 @@ public class JoatseSession {
 		TextMessage message = new TextMessage(js.toString());
 		log.info("sending request: {}", message.getPayload());
 		sendMessage(message);
+	}
+
+	public void handleConnected() {
+		Optional.ofNullable(end2endCipher).ifPresent(e2ec->{
+			try {
+				System.out.println(
+						"Your should check this public key hash before entering your password when running commands in order to detect man-in-the-middle attacks: "
+								+ end2endCipher.getPublicKeyHash());
+			} catch (NoSuchAlgorithmException e) {
+				throw new RuntimeException("Unable to print public key hash: " + e, e);
+			}
+		});
+	}
+
+	public byte[] getPublicKey() {
+		return end2endCipher.getPublicKey();
 	}
 	
 }
