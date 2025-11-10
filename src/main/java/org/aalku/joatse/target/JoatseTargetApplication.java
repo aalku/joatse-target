@@ -194,13 +194,15 @@ public class JoatseTargetApplication implements ApplicationRunner, DisposableBea
 		if (m.matches()) {
 			String host = m.group(3);
 			int port = Integer.parseInt(m.group(4));
-			String description = Optional.ofNullable(m.group(2)).filter(s->!s.isEmpty()).orElseGet(()->(host + ":" + port));
+			String description = m.group(2); // Don't filter empty here, let utility handle it
 			try {
 				InetAddress.getByName(host); // Fail fast
 			} catch (UnknownHostException e) {
 				throw new CommandLineException("Unknown host: " + host); 
 			}
-			return new TunnelRequestItemTcp(host, port, description);
+			// Use utility to ensure consistent description logic
+			String finalDescription = getDefaultTcpDescription(description, host, port);
+			return new TunnelRequestItemTcp(host, port, finalDescription);
 		} else {
 			throw new CommandLineException("shareTcp must be description#targetHost:port or targetHost:port");
 		}
@@ -211,15 +213,13 @@ public class JoatseTargetApplication implements ApplicationRunner, DisposableBea
 		Matcher m = pattern.matcher(arg);
 		if (m.matches()) {
 			String[] commandArray = CommandLineParser.parseCommandLine(m.group(7));
-			String description = Optional.ofNullable(m.group(2)).filter(s->!s.isEmpty()).orElseGet(()->{
-				String desc = commandArray[0].replaceAll("\\s+", "").replaceAll("[^a-zA-Z0-9]+", "_")
-						.replaceAll("__+", "_").replaceAll("^_+|_+$", "");
-				return desc.substring(0, Math.min(desc.length(), 8));
-			});
+			String description = m.group(2); // Don't filter empty here, let utility handle it
 			String user = m.group(3);
 			String host = Optional.ofNullable(m.group(4)).orElse("localhost");
 			int port = Optional.ofNullable(m.group(6)).map(x->Integer.parseInt(x)).orElse(22);
-			return new TunnelRequestItemCommand(commandArray, user, host, port, description);
+			// Use utility to ensure consistent description logic
+			String finalDescription = getDefaultCommandDescription(description, commandArray);
+			return new TunnelRequestItemCommand(commandArray, user, host, port, finalDescription);
 		} else {
 			throw new CommandLineException("shareCommand must be description#user@[sshHost][:sshPort]@commandLine or user@[sshHost][:sshPort]@commandLine. The commandLines is a single string with escaped or quoted spaces between arguments. Eg: --shareCommand=root@@/bin/bash or  '--shareCommand=MyCommand#root@localhost@/bin/myCommand \"arg1 with spaces\" arg2'");
 		}
@@ -231,7 +231,7 @@ public class JoatseTargetApplication implements ApplicationRunner, DisposableBea
 		Matcher m = pattern.matcher(arg);
 		if (m.matches()) {
 			String url = m.group(3);
-			String description = Optional.ofNullable(m.group(2)).filter(s->!s.isEmpty()).orElseGet(()->(url));
+			String description = m.group(2); // Don't filter empty here, let utility handle it
 			URL oUrl;
 			try {
 				oUrl = new URL(url);
@@ -243,7 +243,9 @@ public class JoatseTargetApplication implements ApplicationRunner, DisposableBea
 			} catch (UnknownHostException e) {
 				throw new CommandLineException("Unknown host: " + oUrl.getHost()); 
 			}
-			return new TunnelRequestItemHttp(oUrl, description, unsafe, hideProxy);
+			// Use utility to ensure consistent description logic
+			String finalDescription = getDefaultHttpDescription(description, oUrl);
+			return new TunnelRequestItemHttp(oUrl, finalDescription, unsafe, hideProxy);
 		} else {
 			throw new CommandLineException("shareHttp must be description#URL or URL");
 		}
@@ -273,6 +275,43 @@ public class JoatseTargetApplication implements ApplicationRunner, DisposableBea
 		if (jc != null) {
 			jc.shutdown();
 		}
+	}
+	
+	/**
+	 * Generate default description for HTTP tunnel if not provided.
+	 * This matches the logic used in the cloud service for consistency.
+	 */
+	private static String getDefaultHttpDescription(String description, URL targetUrl) {
+		return Optional.ofNullable(description)
+				.filter(s -> !s.isEmpty())
+				.orElse(targetUrl.toString());
+	}
+	
+	/**
+	 * Generate default description for TCP tunnel if not provided.
+	 * This matches the logic used in the cloud service for consistency.
+	 */
+	private static String getDefaultTcpDescription(String description, String targetHostname, int targetPort) {
+		return Optional.ofNullable(description)
+				.filter(s -> !s.isEmpty())
+				.orElse(targetHostname + ":" + targetPort);
+	}
+	
+	/**
+	 * Generate default description for command tunnel if not provided.
+	 * This matches the logic used in the cloud service for consistency.
+	 */
+	private static String getDefaultCommandDescription(String description, String[] commandArray) {
+		return Optional.ofNullable(description)
+				.filter(s -> !s.isEmpty())
+				.orElseGet(() -> {
+					if (commandArray != null && commandArray.length > 0) {
+						String desc = commandArray[0].replaceAll("\\s+", "").replaceAll("[^a-zA-Z0-9]+", "_")
+								.replaceAll("__+", "_").replaceAll("^_+|_+$", "");
+						return desc.substring(0, Math.min(desc.length(), 8));
+					}
+					return "command";
+				});
 	}
 	
 }

@@ -164,19 +164,6 @@ public class JoatseSession {
 		}
 	}
 
-	private static byte[] asAesIv(long a, long b) {
-		byte[] res = new byte[16];
-		for (int i = 0; i < 8; i++) {
-			res[i] = (byte) (a & 0xFF);
-			a = a / 256;
-		}
-		for (int i = 0; i < 8; i++) {
-			res[8 + i] = (byte) (b & 0xFF);
-			b = b / 256;
-		}
-		return res;
-	}
-
 	private void sendPublicKeyToCloud() {
 		byte[] pk = this.end2endCipher.getPublicKey();
 		ByteBuffer bytes = ByteBuffer.allocate(pk.length + 2);

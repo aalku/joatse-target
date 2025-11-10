@@ -66,7 +66,7 @@ abstract class AbstractTunnelTcpConnection extends AbstractSocketConnection {
 	private void tcpToWs(ByteBuffer buffer) {
 		tcpRead(buffer).thenAccept(bytesRead->{
 			if (bytesRead < 0) {
-				close();
+				close(null, false);
 				return;
 			}
 			buffer.flip();

@@ -10,7 +10,7 @@
 	</parent>
 	<groupId>org.aalku.joatse.target</groupId>
 	<artifactId>joatse-target</artifactId>
-	<version>0.0.24-SNAPSHOT</version>
+	<version>0.0.25-SNAPSHOT</version>
 	<name>joatse-target</name>
 	<description>Tunnel Target</description>
 	<properties>
@@ -117,7 +117,6 @@
 			    <configuration>
 			        <source>${java.version}</source>
 			        <target>${java.version}</target>
-			        <release>${java.version}</release>
 			    </configuration>
 			</plugin>
 			<plugin>
@@ -132,6 +131,28 @@
 
 		</plugins>
 	</build>
+	
+	<profiles>
+		<!-- Profile for Java 9+ that supports release flag -->
+		<profile>
+			<id>java9-plus</id>
+			<activation>
+				<jdk>[9,)</jdk>
+			</activation>
+			<build>
+				<plugins>
+					<plugin>
+						<groupId>org.apache.maven.plugins</groupId>
+						<artifactId>maven-compiler-plugin</artifactId>
+						<configuration>
+							<release>8</release>
+						</configuration>
+					</plugin>
+				</plugins>
+			</build>
+		</profile>
+	</profiles>
+	
 	<repositories>
 		<repository>
 			<id>spring-milestones</id>
