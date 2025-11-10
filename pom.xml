@@ -15,6 +15,7 @@
 	<description>Tunnel Target</description>
 	<properties>
 		<java.version>8</java.version>
+		<tomcat.version>9.0.111</tomcat.version>
 	</properties>
 	
 	<dependencies>
