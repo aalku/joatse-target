@@ -1,11 +1,13 @@
 	package org.aalku.joatse.target;
 
+import java.io.File;
 import java.net.InetAddress;
 import java.net.MalformedURLException;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -16,6 +18,7 @@ import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemCommand;
+import org.aalku.joatse.target.JoatseClient.TunnelRequestItemFile;
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemHttp;
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemSocks5;
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemTcp;
@@ -31,7 +34,7 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication(scanBasePackages = {"org.aalku.joatse.target.cloud"})
 public class JoatseTargetApplication implements ApplicationRunner, DisposableBean {
-	
+		
 	private static final long SLEEP_BETWEEN_CONNECTION_TRIES = 2000L;
 
 	private static final int DEFAULT_RETRY_COUNT = 5;
@@ -63,9 +66,6 @@ public class JoatseTargetApplication implements ApplicationRunner, DisposableBea
 	}
 
 	public static void main(String[] args) {
-//		WebSocketContainer wsc = ContainerProvider.getWebSocketContainer();
-//		wsc.setDefaultMaxBinaryMessageBufferSize();
-
 		SpringApplication app = new SpringApplication(JoatseTargetApplication.class);
 		app.setWebApplicationType(WebApplicationType.NONE);
 		app.run(args).close();
@@ -81,7 +81,9 @@ public class JoatseTargetApplication implements ApplicationRunner, DisposableBea
 
 		Collection<TunnelRequestItemCommand> commandTunnels = parseCommandShareArgs(args);
 
-		if (tcpTunnels.isEmpty() && httpTunnels.isEmpty() && !socks5Tunnel.isPresent() && commandTunnels.isEmpty()) {
+		Collection<TunnelRequestItemFile> fileTunnels = parseFileShareArgs(args);
+
+		if (tcpTunnels.isEmpty() && httpTunnels.isEmpty() && !socks5Tunnel.isPresent() && commandTunnels.isEmpty() && fileTunnels.isEmpty()) {
 			throw new CommandLineException("Expected at least one resource to share");
 		}
 
@@ -99,7 +101,7 @@ public class JoatseTargetApplication implements ApplicationRunner, DisposableBea
 		boolean autoAuthorizeByHttpUrl = Optional.ofNullable(args.getOptionValues("autoAuthorizeByHttpUrl"))
 				.map(x -> x.isEmpty() || Boolean.parseBoolean(x.get(0))).orElse(false);
 		
-		run(tcpTunnels, httpTunnels, socks5Tunnel, commandTunnels, preconfirmUuid, autoAuthorizeByHttpUrl);
+		run(tcpTunnels, httpTunnels, socks5Tunnel, commandTunnels, fileTunnels, preconfirmUuid, autoAuthorizeByHttpUrl);
 	}
 
 	private Optional<TunnelRequestItemSocks5> parseSocks5ShareArgs(ApplicationArguments args) {
@@ -138,11 +140,26 @@ public class JoatseTargetApplication implements ApplicationRunner, DisposableBea
 		return commandTunnels;
 	}
 
+	private Collection<TunnelRequestItemFile> parseFileShareArgs(ApplicationArguments args) {
+		Collection<TunnelRequestItemFile> fileTunnels = new ArrayList<>();
+		List<String> shareFileKeys = args.getOptionNames().stream().filter(n -> n.startsWith("shareFile"))
+				.collect(Collectors.toList());
+		for (String k: shareFileKeys) {
+			List<String> values = args.getOptionValues(k);
+			for (String value: values) {
+				TunnelRequestItemFile config = prepareFileConfig(value);
+				fileTunnels.add(config);
+			}
+		}
+		return fileTunnels;
+	}
+
 	private void run(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels,
-			Optional<TunnelRequestItemSocks5> socks5Tunnel, Collection<TunnelRequestItemCommand> commandTunnels, Optional<UUID> preconfirmUuid,
+			Optional<TunnelRequestItemSocks5> socks5Tunnel, Collection<TunnelRequestItemCommand> commandTunnels,
+			Collection<TunnelRequestItemFile> fileTunnels, Optional<UUID> preconfirmUuid,
 			boolean autoAuthorizeByHttpUrl) throws URISyntaxException {
 		while (true) {
-			runAndWaitToFinish(tcpTunnels, httpTunnels, socks5Tunnel, commandTunnels, preconfirmUuid, autoAuthorizeByHttpUrl);
+			runAndWaitToFinish(tcpTunnels, httpTunnels, socks5Tunnel, commandTunnels, fileTunnels, preconfirmUuid, autoAuthorizeByHttpUrl);
 			if (!daemonMode) {
 				break;
 			} else {
@@ -157,7 +174,8 @@ public class JoatseTargetApplication implements ApplicationRunner, DisposableBea
 
 	private void runAndWaitToFinish(Collection<TunnelRequestItemTcp> tcpTunnels,
 			Collection<TunnelRequestItemHttp> httpTunnels, Optional<TunnelRequestItemSocks5> socks5Tunnel,
-			Collection<TunnelRequestItemCommand> commandTunnels, Optional<UUID> preconfirmUuid, boolean autoAuthorizeByHttpUrl) throws URISyntaxException {
+			Collection<TunnelRequestItemCommand> commandTunnels, Collection<TunnelRequestItemFile> fileTunnels,
+			Optional<UUID> preconfirmUuid, boolean autoAuthorizeByHttpUrl) throws URISyntaxException {
 		Integer maxTries = Optional.ofNullable(getRetryCount()).map(n -> n + 1).orElse(null);
 		int tryNumber = 0;
 		while (!closed ) {
@@ -168,7 +186,7 @@ public class JoatseTargetApplication implements ApplicationRunner, DisposableBea
 			try {
 				jc.connect().waitUntilConnected();		
 				if (jc.isConnected()) {	
-					jc.createTunnel(tcpTunnels, httpTunnels, socks5Tunnel, commandTunnels, preconfirmUuid, autoAuthorizeByHttpUrl);
+					jc.createTunnel(tcpTunnels, httpTunnels, socks5Tunnel, commandTunnels, fileTunnels, preconfirmUuid, autoAuthorizeByHttpUrl);
 					jc.waitUntilFinished();
 					break;
 				} else {
@@ -312,6 +330,53 @@ public class JoatseTargetApplication implements ApplicationRunner, DisposableBea
 					}
 					return "command";
 				});
+	}
+	
+	private TunnelRequestItemFile prepareFileConfig(String arg) throws CommandLineException {
+		Pattern pattern = Pattern.compile("^((.*)#)?(.+)$");
+		Matcher m = pattern.matcher(arg);
+		if (m.matches()) {
+			String description = m.group(2);
+			String path = m.group(3);
+			
+			// Convert to absolute path
+			File file = new File(path);
+			String absolutePath;
+			try {
+				absolutePath = file.getAbsolutePath();
+			} catch (SecurityException e) {
+				throw new CommandLineException("Cannot access file: " + path);
+			}
+			
+			// Validate file
+			if (!file.exists()) {
+				throw new CommandLineException("File does not exist: " + absolutePath);
+			}
+			
+			// Accept regular files and symlinks
+			if (!file.isFile()) {
+				throw new CommandLineException("Not a regular file or symlink: " + absolutePath);
+			}
+			
+			if (!file.canRead()) {
+				throw new CommandLineException("File is not readable: " + absolutePath);
+			}
+			
+			String finalDescription = getDefaultFileDescription(description, absolutePath);
+			return new TunnelRequestItemFile(absolutePath, finalDescription);
+		} else {
+			throw new CommandLineException("shareFile must be description#path or path");
+		}
+	}
+	
+	/**
+	 * Generate default description for file tunnel if not provided.
+	 * This matches the logic used in the cloud service for consistency.
+	 */
+	private static String getDefaultFileDescription(String description, String path) {
+		return Optional.ofNullable(description)
+				.filter(s -> !s.isEmpty())
+				.orElse(new File(path).getName());
 	}
 	
 }

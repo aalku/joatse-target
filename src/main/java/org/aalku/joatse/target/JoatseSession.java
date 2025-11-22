@@ -19,11 +19,13 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
 
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemCommand;
+import org.aalku.joatse.target.JoatseClient.TunnelRequestItemFile;
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemHttp;
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemSocks5;
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemTcp;
 import org.aalku.joatse.target.connection.BasicTunnelTcpConnection;
 import org.aalku.joatse.target.connection.CommandConnection;
+import org.aalku.joatse.target.connection.FileTunnelConnection;
 import org.aalku.joatse.target.connection.Socks5TunnelTcpConnection;
 import org.aalku.joatse.target.connection.TunnelConnection;
 import org.aalku.joatse.target.tools.cipher.JoatseCipher;
@@ -52,18 +54,27 @@ public class JoatseSession {
 	ReentrantLock lock = new ReentrantLock();
 	
 	/**
-	 * Requested tcp and http connections
+	 * Map<Long targetId, TunnelRequestItemTcp> for requested tcp and http connections
 	 */
-	private Map<Long, TunnelRequestItemTcp> tcpConnectionRequestTargets = new LinkedHashMap<>();
-	
-	/** Requested socks5 connections */
-	private AtomicReference<TunnelRequestItemSocks5> tunnelRequestItemSocks5 = new AtomicReference<JoatseClient.TunnelRequestItemSocks5>(null);
-	
-	/** Requested command connections */
-	private Map<Long, TunnelRequestItemCommand> tunnelRequestItemCommand = new LinkedHashMap<>();
+	private Map<Long, TunnelRequestItemTcp> tcpRequestTargets = new LinkedHashMap<>();
 	
 	/**
-	 * Stablished tunnel connections
+	 * AtomicReference<TunnelRequestItemSocks5> for requested socks5 connections
+	 */
+	private AtomicReference<TunnelRequestItemSocks5> socks5RequestTarget = new AtomicReference<JoatseClient.TunnelRequestItemSocks5>(null);
+	
+	/**
+	 * Map<Long targetId, TunnelRequestItemCommand> for requested command connections
+	 */
+	private Map<Long, TunnelRequestItemCommand> commandRequestTargets = new LinkedHashMap<>();
+	
+	/**
+	 * Map<Long targetId, TunnelRequestItemFile> for requested file connections
+	 */
+	private Map<Long, TunnelRequestItemFile> fileRequestTargets = new LinkedHashMap<>();
+	
+	/**
+	 * Map<Long socketId, TunnelConnection> for established tunnel connections
 	 */
 	private Map<Long, TunnelConnection> connectionMap = new LinkedHashMap<>();
 
@@ -110,17 +121,23 @@ public class JoatseSession {
 		} else if (type == TunnelConnection.MESSAGE_TYPE_NEW_SOCKET) {
 			long socketId = buffer.getLong();
 			long targetId = buffer.getLong();
-			TunnelRequestItemTcp target = tcpConnectionRequestTargets.get(targetId);
+			
+			// Check for TCP/HTTP tunnel
+			TunnelRequestItemTcp target = tcpRequestTargets.get(targetId);
 			if (target != null) {
 				newConnectionTcp(socketId, target);
 				return;
-			} 
-			TunnelRequestItemSocks5 socks5 = Optional.ofNullable(tunnelRequestItemSocks5.get()).filter(x->x.targetId == targetId).orElse(null);
+			}
+			
+			// Check for SOCKS5 tunnel
+			TunnelRequestItemSocks5 socks5 = Optional.ofNullable(socks5RequestTarget.get()).filter(x->x.targetId == targetId).orElse(null);
 			if (socks5 != null) {
 				newConnectionSocks5(socketId, socks5);
 				return;
-			} 
-			TunnelRequestItemCommand command = tunnelRequestItemCommand.get(targetId);
+			}
+			
+			// Check for command tunnel (has encrypted session key payload)
+			TunnelRequestItemCommand command = commandRequestTargets.get(targetId);
 			if (command != null) {
 				byte[] cipheredSessionKey = new byte[buffer.remaining()];
 				buffer.get(cipheredSessionKey);
@@ -132,7 +149,22 @@ public class JoatseSession {
 				}
 				newConnectionCommand(socketId, command, sessionCipher);
 				return;
-			} 
+			}
+			
+			// Check for file request (has 16-byte payload: offset + length)
+			TunnelRequestItemFile fileTarget = fileRequestTargets.get(targetId);
+			if (fileTarget != null) {
+				if (buffer.remaining() >= 16) {
+					long offset = buffer.getLong();
+					long length = buffer.getLong();
+					handleFileReadRequest(socketId, targetId, offset, length);
+					return;
+				} else {
+					log.error("File request for targetId {} missing offset/length payload", targetId);
+					return;
+				}
+			}
+			
 			log.warn("Received new socket for unknown target id: " + targetId);
 			return;
 		} else if (TunnelConnection.supportedMessages.contains(type)) {
@@ -252,6 +284,41 @@ public class JoatseSession {
 		return outputCommand.toArray(new String[outputCommand.size()]);
 	}
 
+	private void handleFileReadRequest(long socketId, long targetId, long offset, long length) {
+		TunnelRequestItemFile fileTarget = fileRequestTargets.get(targetId);
+		if (fileTarget == null) {
+			log.warn("File read request for unknown targetId: {}", targetId);
+			// Create a connection just to send error and close
+			FileTunnelConnection errorConn = new FileTunnelConnection(this, socketId, (e)->this.close(e), 
+					"", 0, 0);
+			add(errorConn);
+			// The connection will handle sending error
+			return;
+		}
+		
+		// Create file tunnel connection
+		FileTunnelConnection conn = new FileTunnelConnection(this, socketId, (e)->this.close(e),
+				fileTarget.targetPath, offset, length);
+		add(conn);
+		
+		// Start streaming (async via CompletableFuture chain)
+		conn.startStreaming();
+		
+		// Set up completion handler
+		conn.getCloseStatus().thenAccept(remote -> {
+			if (remote == null) {
+				log.info("File tunnel closed");
+			} else if (remote) {
+				log.info("File tunnel closed by cloud side");
+			} else {
+				log.info("File tunnel closed by this side");
+			}
+		}).exceptionally(e -> {
+			log.error("File tunnel closed because of error: {}", e, e);
+			return null;
+		});
+	}
+
 	public void close() {
 		close(null);
 	}
@@ -285,6 +352,7 @@ public class JoatseSession {
 
 	public void createTunnel(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels,
 			Optional<TunnelRequestItemSocks5> socks5Tunnel, Collection<TunnelRequestItemCommand> commandTunnels,
+			Collection<TunnelRequestItemFile> fileTunnels,
 			Optional<UUID> preconfirmUuid, boolean autoAuthorizeByHttpUrl) {
 		if (!commandTunnels.isEmpty()) {
 			// Prepare e2e cypher
@@ -300,7 +368,7 @@ public class JoatseSession {
 		if (!tcpTunnels.isEmpty()) {
 			JSONArray tcpJs = new JSONArray();
 			for (TunnelRequestItemTcp i: tcpTunnels) {
-				tcpConnectionRequestTargets.put(i.targetId, i);
+				tcpRequestTargets.put(i.targetId, i);
 				JSONObject o = new JSONObject();
 				o.put("targetId", i.targetId);
 				o.put("targetDescription", i.targetDescription);
@@ -313,7 +381,7 @@ public class JoatseSession {
 		if (!httpTunnels.isEmpty()) {
 			JSONArray httpJs = new JSONArray();
 			for (TunnelRequestItemHttp i: httpTunnels) {
-				tcpConnectionRequestTargets.put(i.targetId, i); // It's tcp too
+				tcpRequestTargets.put(i.targetId, i); // It's tcp too
 				JSONObject o = new JSONObject();
 				o.put("targetId", i.targetId);
 				o.put("targetDescription", i.targetDescription);
@@ -326,7 +394,7 @@ public class JoatseSession {
 		}
 		socks5Tunnel.ifPresent(t->{
 			JSONArray s5J = new JSONArray();
-			this.tunnelRequestItemSocks5.set(t);
+			this.socks5RequestTarget.set(t);
 			JSONObject o = new JSONObject();
 			o.put("targetId", t.targetId);
 			s5J.put(o);
@@ -335,7 +403,7 @@ public class JoatseSession {
 		if (!commandTunnels.isEmpty()) {
 			JSONArray commandJs = new JSONArray();
 			for (TunnelRequestItemCommand i: commandTunnels) {
-				tunnelRequestItemCommand.put(i.targetId, i);
+				commandRequestTargets.put(i.targetId, i);
 				JSONObject o = new JSONObject();
 				o.put("targetId", i.targetId);
 				o.put("targetDescription", i.getTargetDescription());
@@ -346,6 +414,18 @@ public class JoatseSession {
 				commandJs.put(o);
 			}
 			js.put("commandTunnels", commandJs);
+		}
+		if (!fileTunnels.isEmpty()) {
+			JSONArray fileJs = new JSONArray();
+			for (TunnelRequestItemFile i: fileTunnels) {
+				fileRequestTargets.put(i.targetId, i);
+				JSONObject o = new JSONObject();
+				o.put("targetId", i.targetId);
+				o.put("targetDescription", i.targetDescription);
+				o.put("targetPath", i.targetPath);
+				fileJs.put(o);
+			}
+			js.put("fileTunnels", fileJs);
 		}
 		preconfirmUuid.ifPresent(uuid->{
 			js.put("preconfirmed", uuid.toString());

@@ -212,6 +212,29 @@ public class JoatseClient implements WebSocketHandler {
 							}
 						}
 					}
+					if (js.has("fileTunnels")) {
+						JSONArray fileTunnels = js.getJSONArray("fileTunnels");
+						if (!fileTunnels.isEmpty()) {
+							System.out.println("File Tunnels:");
+							try {
+								for (int i = 0; i < fileTunnels.length(); i++) {
+									JSONObject p = fileTunnels.getJSONObject(i);
+									String listenUrl = p.getString("listenUrl");
+									String targetPath = p.getString("targetPath");
+									String targetDescription = p.optString("targetDescription", "");
+									if (targetDescription.isEmpty()) {
+										System.out.println(String.format("  %s --> %s", listenUrl, targetPath));
+									} else {
+										System.out.println(String.format("  %s --> %s (%s)", listenUrl, targetPath, targetDescription));
+									}
+								}
+							} catch (Exception e) {
+								System.err.println("Error printing file tunnels");
+								System.err.println("fileTunnels element is: " + fileTunnels.toString());
+								e.printStackTrace();
+							}
+						}
+					}
 					setState(ClientState.TUNNEL_CONNECTED);
 					jSession.handleConnected();
     				return;
@@ -384,8 +407,32 @@ public class JoatseClient implements WebSocketHandler {
 		}
 	}
 	
+	public static class TunnelRequestItemFile {
+		public final long targetId = new Random().nextLong() & Long.MAX_VALUE;
+		public final String targetPath;
+		public final String targetDescription;
+
+		public TunnelRequestItemFile(String targetPath, String targetDescription) {
+			this.targetPath = targetPath;
+			this.targetDescription = targetDescription;
+		}
+
+		public long getTargetId() {
+			return targetId;
+		}
+
+		public String getTargetPath() {
+			return targetPath;
+		}
+
+		public String getTargetDescription() {
+			return targetDescription;
+		}
+	}
+	
 	/**
 	 * @param commandTunnels 
+	 * @param fileTunnels 
 	 * @param preconfirmUuid 
 	 * @param tcpTunnels: Requested TCP tunnel connections
 	 * @param httpTunnels: Requested HTTP tunnel connections
@@ -393,11 +440,12 @@ public class JoatseClient implements WebSocketHandler {
 	 */
 	public void createTunnel(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels,
 			Optional<TunnelRequestItemSocks5> socks5Tunnel, Collection<TunnelRequestItemCommand> commandTunnels,
+			Collection<TunnelRequestItemFile> fileTunnels,
 			Optional<UUID> preconfirmUuid, boolean autoAuthorizeByHttpUrl) {
 		if (state.get() != ClientState.WS_CONNECTED) {
 			throw new IllegalStateException("Invalid call to createTunnel when state != WS_CONNECTED");
 		}
-		jSession.createTunnel(tcpTunnels, httpTunnels, socks5Tunnel, commandTunnels, preconfirmUuid, autoAuthorizeByHttpUrl);
+		jSession.createTunnel(tcpTunnels, httpTunnels, socks5Tunnel, commandTunnels, fileTunnels, preconfirmUuid, autoAuthorizeByHttpUrl);
 		if (!preconfirmUuid.isPresent()) {
 			setState(ClientState.WAITING_RESPONSE);
 		} else {

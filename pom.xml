@@ -10,7 +10,7 @@
 	</parent>
 	<groupId>org.aalku.joatse.target</groupId>
 	<artifactId>joatse-target</artifactId>
-	<version>0.0.25-SNAPSHOT</version>
+	<version>0.0.26-SNAPSHOT</version>
 	<name>joatse-target</name>
 	<description>Tunnel Target</description>
 	<properties>
