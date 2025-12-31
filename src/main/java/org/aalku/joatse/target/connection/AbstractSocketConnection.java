@@ -226,7 +226,7 @@ public abstract class AbstractSocketConnection implements TunnelConnection {
 	}
 
 	public final void close(Throwable e, Boolean remote) {
-		getLog().info("Closing because of ({}, {}): {}", e, remote, socketId, e);
+		getLog().debug("Closing because of ({}, {}): {}", e, remote, socketId, e);
 		destroy();
 		sendMessage(newTcpSocketCloseMessage()); // Tell WS
 		if (e == null) {
@@ -245,7 +245,5 @@ public abstract class AbstractSocketConnection implements TunnelConnection {
 			throw e;
 		}
 	}
-
-	protected abstract void copyFromTargetToCloudForever();
 	
 }

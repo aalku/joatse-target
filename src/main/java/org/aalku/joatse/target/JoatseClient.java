@@ -235,6 +235,31 @@ public class JoatseClient implements WebSocketHandler {
 							}
 						}
 					}
+					if (js.has("folderTunnels")) {
+						JSONArray folderTunnels = js.getJSONArray("folderTunnels");
+						if (!folderTunnels.isEmpty()) {
+							System.out.println("Folder Tunnels:");
+							try {
+								for (int i = 0; i < folderTunnels.length(); i++) {
+									JSONObject p = folderTunnels.getJSONObject(i);
+									String listenUrl = p.getString("listenUrl");
+									String targetPath = p.getString("targetPath");
+									String targetDescription = p.optString("targetDescription", "");
+									boolean readOnly = p.optBoolean("readOnly", true);
+									String rwFlag = readOnly ? "RO" : "RW";
+									if (targetDescription.isEmpty()) {
+										System.out.println(String.format("  %s --> %s [%s]", listenUrl, targetPath, rwFlag));
+									} else {
+										System.out.println(String.format("  %s --> %s (%s) [%s]", listenUrl, targetPath, targetDescription, rwFlag));
+									}
+								}
+							} catch (Exception e) {
+								System.err.println("Error printing folder tunnels");
+								System.err.println("folderTunnels element is: " + folderTunnels.toString());
+								e.printStackTrace();
+							}
+						}
+					}
 					setState(ClientState.TUNNEL_CONNECTED);
 					jSession.handleConnected();
     				return;
@@ -411,10 +436,12 @@ public class JoatseClient implements WebSocketHandler {
 		public final long targetId = new Random().nextLong() & Long.MAX_VALUE;
 		public final String targetPath;
 		public final String targetDescription;
+		public final String targetFileName;
 
-		public TunnelRequestItemFile(String targetPath, String targetDescription) {
+		public TunnelRequestItemFile(String targetPath, String targetDescription, String targetFileName) {
 			this.targetPath = targetPath;
 			this.targetDescription = targetDescription;
+			this.targetFileName = targetFileName;
 		}
 
 		public long getTargetId() {
@@ -428,11 +455,45 @@ public class JoatseClient implements WebSocketHandler {
 		public String getTargetDescription() {
 			return targetDescription;
 		}
+
+		public String getTargetFileName() {
+			return targetFileName;
+		}
+	}
+	
+	public static class TunnelRequestItemFolder {
+		public final long targetId = new Random().nextLong() & Long.MAX_VALUE;
+		public final String targetPath;
+		public final String targetDescription;
+		public final boolean readOnly;
+
+		public TunnelRequestItemFolder(String targetPath, String targetDescription, boolean readOnly) {
+			this.targetPath = targetPath;
+			this.targetDescription = targetDescription;
+			this.readOnly = readOnly;
+		}
+
+		public long getTargetId() {
+			return targetId;
+		}
+
+		public String getTargetPath() {
+			return targetPath;
+		}
+
+		public String getTargetDescription() {
+			return targetDescription;
+		}
+		
+		public boolean isReadOnly() {
+			return readOnly;
+		}
 	}
 	
 	/**
 	 * @param commandTunnels 
 	 * @param fileTunnels 
+	 * @param folderTunnels 
 	 * @param preconfirmUuid 
 	 * @param tcpTunnels: Requested TCP tunnel connections
 	 * @param httpTunnels: Requested HTTP tunnel connections
@@ -440,12 +501,12 @@ public class JoatseClient implements WebSocketHandler {
 	 */
 	public void createTunnel(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels,
 			Optional<TunnelRequestItemSocks5> socks5Tunnel, Collection<TunnelRequestItemCommand> commandTunnels,
-			Collection<TunnelRequestItemFile> fileTunnels,
+			Collection<TunnelRequestItemFile> fileTunnels, Collection<TunnelRequestItemFolder> folderTunnels,
 			Optional<UUID> preconfirmUuid, boolean autoAuthorizeByHttpUrl) {
 		if (state.get() != ClientState.WS_CONNECTED) {
 			throw new IllegalStateException("Invalid call to createTunnel when state != WS_CONNECTED");
 		}
-		jSession.createTunnel(tcpTunnels, httpTunnels, socks5Tunnel, commandTunnels, fileTunnels, preconfirmUuid, autoAuthorizeByHttpUrl);
+		jSession.createTunnel(tcpTunnels, httpTunnels, socks5Tunnel, commandTunnels, fileTunnels, folderTunnels, preconfirmUuid, autoAuthorizeByHttpUrl);
 		if (!preconfirmUuid.isPresent()) {
 			setState(ClientState.WAITING_RESPONSE);
 		} else {

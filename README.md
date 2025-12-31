@@ -112,7 +112,7 @@ Execute commands on a remote system via SSH and share the result through the tun
 
 #### 5. File Sharing (`--shareFile`)
 
-Share individual files from the target system through the tunnel.
+Share individual files through the tunnel (read-only).
 
 **Format:** `[description#]path/to/file`
 
@@ -124,41 +124,33 @@ Share individual files from the target system through the tunnel.
 # Share with custom description
 --shareFile="Application Log#/var/log/app.log"
 
-# Share configuration file
---shareFile="Config#/etc/myapp/config.json"
-
-# Share from current directory (relative path)
---shareFile=./report.pdf
-
-# Windows path
---shareFile="C:\logs\application.log"
-
 # Multiple files
 --shareFile=/var/log/app.log --shareFile="Report#/home/user/report.pdf"
 ```
 
-**Features:**
-- **Automatic path conversion**: Relative paths are converted to absolute paths before sharing
-- **File validation**: Target validates that file exists, is readable, and is a regular file (or symlink)
-- **Auto-description**: If no description provided, uses the filename (e.g., `application.log`)
-- **Metadata support**: Cloud service can query file metadata (name, size, last modified)
-- **Range requests**: Supports partial file downloads (HTTP Range header)
-- **Read-only access**: Files are shared for reading only, no write access
-- **Symlink support**: Symlinks are followed; metadata reflects target file, but filename is the symlink name
+**Features:** Range requests (partial downloads), auto-description from filename, symlink support.
 
-**Use Cases:**
-- Share log files for remote inspection
-- Provide configuration files for download
-- Share build artifacts or generated reports
-- Temporary file sharing without setting up a web server
-- Read-only access to specific files
+#### 6. Folder Sharing (`--shareFolder`, `--shareFolderRW`)
 
-**Security Notes:**
-- Files are validated at startup (existence, readability)
-- Only files explicitly specified are shared
-- Symlinks are followed automatically
-- Access control is managed by the cloud service
-- Use absolute paths in confirmation to prevent confusion
+Share entire directories through the tunnel, accessible via a web-based file browser.
+
+**Format:** `[description#]path/to/folder`
+
+**Examples:**
+```bash
+# Share a folder (read-only by default)
+--shareFolder=/var/log
+
+# Share with custom description
+--shareFolder="Application Logs#/var/log/myapp"
+
+# Read-write mode (allows upload, delete, rename)
+--shareFolderRW=/home/user/workspace
+```
+
+**Operations:** List, download, upload (RW), create/delete/rename (RW)
+
+**Security:** The shared folder becomes the virtual root - parent directories and path traversal (`../`) are blocked.
 
 ### General Parameters
 
@@ -179,6 +171,8 @@ java -jar joatse-target-WHATEVER.jar \
   --shareTcp=localhost:22 \
   --shareSocks5=* \
   --shareFile=/var/log/app.log \
+  --shareFolder=/var/log \
+  --shareFolderRW=/home/user/uploads \
   --cloud.url=wss://your-server:9011/connection \
   --daemonMode=true
 ```

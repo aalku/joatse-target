@@ -168,11 +168,6 @@ public class CommandConnection extends AbstractSocketConnection {
 			p.destroyForcibly();
 		}
 	}
-
-	@Override
-	protected void copyFromTargetToCloudForever() {
-		// Nothing to do
-	}
 	
 	private Thread stdOutThread(InputStream out, Stream stream) {
 		return new Thread(stream.toString() + "_Handler") {

@@ -20,12 +20,14 @@ import java.util.concurrent.locks.ReentrantLock;
 
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemCommand;
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemFile;
+import org.aalku.joatse.target.JoatseClient.TunnelRequestItemFolder;
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemHttp;
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemSocks5;
 import org.aalku.joatse.target.JoatseClient.TunnelRequestItemTcp;
 import org.aalku.joatse.target.connection.BasicTunnelTcpConnection;
 import org.aalku.joatse.target.connection.CommandConnection;
 import org.aalku.joatse.target.connection.FileTunnelConnection;
+import org.aalku.joatse.target.connection.FolderTunnelConnection;
 import org.aalku.joatse.target.connection.Socks5TunnelTcpConnection;
 import org.aalku.joatse.target.connection.TunnelConnection;
 import org.aalku.joatse.target.tools.cipher.JoatseCipher;
@@ -72,6 +74,11 @@ public class JoatseSession {
 	 * Map<Long targetId, TunnelRequestItemFile> for requested file connections
 	 */
 	private Map<Long, TunnelRequestItemFile> fileRequestTargets = new LinkedHashMap<>();
+	
+	/**
+	 * Map<Long targetId, TunnelRequestItemFolder> for requested folder connections
+	 */
+	private Map<Long, TunnelRequestItemFolder> folderRequestTargets = new LinkedHashMap<>();
 	
 	/**
 	 * Map<Long socketId, TunnelConnection> for established tunnel connections
@@ -151,18 +158,20 @@ public class JoatseSession {
 				return;
 			}
 			
-			// Check for file request (has 16-byte payload: offset + length)
+			// Check for file request (has payload with offset + length)
 			TunnelRequestItemFile fileTarget = fileRequestTargets.get(targetId);
 			if (fileTarget != null) {
-				if (buffer.remaining() >= 16) {
-					long offset = buffer.getLong();
-					long length = buffer.getLong();
-					handleFileReadRequest(socketId, targetId, offset, length);
-					return;
-				} else {
-					log.error("File request for targetId {} missing offset/length payload", targetId);
-					return;
-				}
+				ByteBuffer payload = buffer.slice();
+				handleFileReadRequest(socketId, fileTarget, payload);
+				return;
+			}
+			
+			// Check for folder request (has payload with opCode + path + operation-specific data)
+			TunnelRequestItemFolder folderTarget = folderRequestTargets.get(targetId);
+			if (folderTarget != null) {
+				ByteBuffer payload = buffer.slice();
+				handleFolderRequest(socketId, folderTarget, payload);
+				return;
 			}
 			
 			log.warn("Received new socket for unknown target id: " + targetId);
@@ -284,37 +293,62 @@ public class JoatseSession {
 		return outputCommand.toArray(new String[outputCommand.size()]);
 	}
 
-	private void handleFileReadRequest(long socketId, long targetId, long offset, long length) {
-		TunnelRequestItemFile fileTarget = fileRequestTargets.get(targetId);
-		if (fileTarget == null) {
-			log.warn("File read request for unknown targetId: {}", targetId);
-			// Create a connection just to send error and close
-			FileTunnelConnection errorConn = new FileTunnelConnection(this, socketId, (e)->this.close(e), 
-					"", 0, 0);
-			add(errorConn);
-			// The connection will handle sending error
+	private void handleFileReadRequest(long socketId, TunnelRequestItemFile fileTarget, ByteBuffer payload) {
+		// Create file tunnel connection
+		FileTunnelConnection conn;
+		try {
+			conn = new FileTunnelConnection(this, socketId, (e)->this.close(e),
+					fileTarget.targetPath, payload);
+		} catch (IOException e) {
+			log.error("Failed to create file tunnel connection: {}", e.getMessage());
 			return;
 		}
-		
-		// Create file tunnel connection
-		FileTunnelConnection conn = new FileTunnelConnection(this, socketId, (e)->this.close(e),
-				fileTarget.targetPath, offset, length);
 		add(conn);
 		
-		// Start streaming (async via CompletableFuture chain)
-		conn.startStreaming();
+		// Start streaming after connection is registered
+		conn.start();
 		
 		// Set up completion handler
 		conn.getCloseStatus().thenAccept(remote -> {
 			if (remote == null) {
-				log.info("File tunnel closed");
+				log.debug("File tunnel closed");
 			} else if (remote) {
-				log.info("File tunnel closed by cloud side");
+				log.debug("File tunnel closed by cloud side");
 			} else {
-				log.info("File tunnel closed by this side");
+				log.debug("File tunnel closed by this side");
 			}
 		}).exceptionally(e -> {
 			log.error("File tunnel closed because of error: {}", e, e);
+			return null;
+		});
+	}
+	
+	private void handleFolderRequest(long socketId, TunnelRequestItemFolder folderTarget, ByteBuffer payload) {
+		// Create folder tunnel connection
+		FolderTunnelConnection conn;
+		try {
+			conn = new FolderTunnelConnection(this, socketId, (e)->this.close(e),
+					folderTarget.targetPath, folderTarget.readOnly, payload);
+		} catch (IOException e) {
+			log.error("Failed to create folder tunnel connection: {}", e.getMessage());
+			return;
+		}
+		add(conn);
+		
+		// Start operation execution after connection is registered
+		conn.start();
+		
+		// Set up completion handler
+		conn.getCloseStatus().thenAccept(remote -> {
+			if (remote == null) {
+				log.debug("Folder tunnel closed");
+			} else if (remote) {
+				log.debug("Folder tunnel closed by cloud side");
+			} else {
+				log.debug("Folder tunnel closed by this side");
+			}
+		}).exceptionally(e -> {
+			log.error("Folder tunnel closed because of error: {}", e, e);
 			return null;
 		});
 	}
@@ -352,7 +386,7 @@ public class JoatseSession {
 
 	public void createTunnel(Collection<TunnelRequestItemTcp> tcpTunnels, Collection<TunnelRequestItemHttp> httpTunnels,
 			Optional<TunnelRequestItemSocks5> socks5Tunnel, Collection<TunnelRequestItemCommand> commandTunnels,
-			Collection<TunnelRequestItemFile> fileTunnels,
+			Collection<TunnelRequestItemFile> fileTunnels, Collection<TunnelRequestItemFolder> folderTunnels,
 			Optional<UUID> preconfirmUuid, boolean autoAuthorizeByHttpUrl) {
 		if (!commandTunnels.isEmpty()) {
 			// Prepare e2e cypher
@@ -423,9 +457,23 @@ public class JoatseSession {
 				o.put("targetId", i.targetId);
 				o.put("targetDescription", i.targetDescription);
 				o.put("targetPath", i.targetPath);
+				o.put("targetFileName", i.targetFileName);
 				fileJs.put(o);
 			}
 			js.put("fileTunnels", fileJs);
+		}
+		if (!folderTunnels.isEmpty()) {
+			JSONArray folderJs = new JSONArray();
+			for (TunnelRequestItemFolder i: folderTunnels) {
+				folderRequestTargets.put(i.targetId, i);
+				JSONObject o = new JSONObject();
+				o.put("targetId", i.targetId);
+				o.put("targetDescription", i.targetDescription);
+				o.put("targetPath", i.targetPath);
+				o.put("readOnly", i.readOnly);
+				folderJs.put(o);
+			}
+			js.put("folderTunnels", folderJs);
 		}
 		preconfirmUuid.ifPresent(uuid->{
 			js.put("preconfirmed", uuid.toString());

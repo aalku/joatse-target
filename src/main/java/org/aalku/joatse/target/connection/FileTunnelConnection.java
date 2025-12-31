@@ -5,7 +5,6 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
 import org.aalku.joatse.target.JoatseSession;
@@ -27,11 +26,24 @@ public class FileTunnelConnection extends AbstractSocketConnection {
 	private RandomAccessFile raf;
 
 	public FileTunnelConnection(JoatseSession manager, long socketId, Consumer<Throwable> closeSession,
-			String filePath, long offset, long length) {
+			String filePath, ByteBuffer payload) throws IOException {
 		super(manager, socketId, closeSession);
 		this.filePath = filePath;
-		this.offset = offset;
-		this.length = length;
+		
+		// Parse payload: offset (8 bytes) + length (8 bytes)
+		if (payload.remaining() < 16) {
+			throw new IOException("Invalid file request payload: expected 16 bytes, got " + payload.remaining());
+		}
+		this.offset = payload.getLong();
+		this.length = payload.getLong();
+	}
+
+	/**
+	 * Start streaming the file content.
+	 * Must be called after connection is registered with JoatseSession.
+	 */
+	public void start() {
+		startStreaming();
 	}
 
 	@Override
@@ -85,15 +97,15 @@ public class FileTunnelConnection extends AbstractSocketConnection {
 			headerBuffer.put(metadataBytes);
 			headerBuffer.flip();
 			
-			log.info("Sending metadata header ({} bytes), will stream content: {}", metadataBytes.length, (length != 0));
+			log.debug("Sending metadata header ({} bytes), will stream content: {}", metadataBytes.length, (length != 0));
 			
 			// Send header with CRC32
 			sendDataMessageToCloud(headerBuffer).thenRun(() -> {
 				if (length != 0) {
-					log.info("Streaming file content");
+					log.debug("Streaming file content");
 					streamFileContent(file);
 				} else {
-					log.info("Length is 0, closing without streaming content");
+					log.debug("Length is 0, closing without streaming content");
 					close(null, false);
 				}
 			}).exceptionally(e -> {
@@ -131,7 +143,7 @@ public class FileTunnelConnection extends AbstractSocketConnection {
 				remaining = Math.min(length, raf.length() - offset);
 			}
 			
-			log.info("Will stream {} bytes from file", remaining);
+			log.debug("Will stream {} bytes from file", remaining);
 			// Stream file in chunks
 			streamNextChunk(remaining);
 			
@@ -144,7 +156,7 @@ public class FileTunnelConnection extends AbstractSocketConnection {
 	private void streamNextChunk(long remaining) {
 		try {
 			if (remaining <= 0) {
-				log.info("Streaming complete, closing connection");
+				log.debug("Streaming complete, closing connection");
 				close(null, false);
 				return;
 			}
@@ -155,10 +167,10 @@ public class FileTunnelConnection extends AbstractSocketConnection {
 			byte[] tempBuffer = new byte[toRead];
 			int read = raf.read(tempBuffer, 0, toRead);
 			
-			log.info("Read {} bytes from file ({} remaining)", read, remaining);
+			log.debug("Read {} bytes from file ({} remaining)", read, remaining);
 			
 			if (read <= 0) {
-				log.info("No more data to read, closing connection");
+				log.debug("No more data to read, closing connection");
 				close(null, false);
 				return;
 			}
@@ -223,12 +235,5 @@ public class FileTunnelConnection extends AbstractSocketConnection {
 				log.warn("Error closing RandomAccessFile", e);
 			}
 		}
-	}
-
-	@Override
-	protected void copyFromTargetToCloudForever() {
-		// For file tunnels, we start streaming when requested
-		// This method is called when the connection is established
-		startStreaming();
 	}
 }

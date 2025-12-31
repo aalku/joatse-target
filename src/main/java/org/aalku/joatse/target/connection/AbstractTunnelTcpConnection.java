@@ -143,11 +143,8 @@ abstract class AbstractTunnelTcpConnection extends AbstractSocketConnection {
 		super.assertClosed();
 	}
 
-	@Override
 	public void copyFromTargetToCloudForever() {
-		tcpToWs(allocateDataBuffer()); // start copying from WS to TCP
+		tcpToWs(allocateDataBuffer()); // start copying from TCP to WS
 	}
-
-
 
 }
